@@ -1,0 +1,4 @@
+include LICENSE
+include THIRD-PARTY-NOTICES.md
+include requirements.txt
+include configs/README.md

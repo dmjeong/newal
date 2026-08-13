@@ -349,7 +349,12 @@ UI 버그나 에러 텍스트를 읽으려면 흐릿한 32장보다 선명한 8�
 
 ## 설정
 
-`configs/default.yaml` → `configs/local.yaml`로 복사하면 git에 안 올라갑니다.
+기본값은 패키지 안에 있습니다 (`src/newal/data/default.yaml`). 바꾸려면
+`configs/local.yaml`을 만드세요. gitignore 되어 있고, 기본값 위에 병합됩니다.
+
+```bash
+newal config > configs/local.yaml   # 현재 설정을 뽑아서 시작
+```
 
 ```powershell
 $env:NEWAL_MODELS__LIGHT__ENABLED = "true"
@@ -545,6 +550,7 @@ newal config -s router       # 한 섹션만
 ```
 src/newal/
 ├─ config.py          설정 로딩 (YAML 4계층 + 환경변수)
+├─ data/default.yaml  기본 설정 (패키지에 동봉)
 ├─ cli.py             대화형 터미널
 ├─ models/            모델 풀 · 라우터 · 분류기 · 임베딩/재정렬
 ├─ backends/          vLLM/SGLang 클라이언트 · 서버 기동 · transformers 폴백
@@ -557,7 +563,8 @@ src/newal/
 
 ### 버전 정책
 
-- **3.0.1** — 히스토리 트리밍이 캡처 인덱스를 어긋나게 하던 버그 수정 (현재)
+- **3.0.2** — LICENSE 추가, `pip install`로 설치하면 기동 못 하던 버그 수정 (현재)
+- **3.0.1** — 히스토리 트리밍이 캡처 인덱스를 어긋나게 하던 버그 수정
 - **3.0** — 파인튜닝 데이터 수집 + `newal export`
 - **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정
 - **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리
@@ -580,4 +587,16 @@ src/newal/
 
 ## 라이선스
 
-MIT. Qwen 가중치는 각 모델의 라이선스를 따릅니다.
+newal은 **MIT**입니다 (`LICENSE`).
+
+의존성은 전부 permissive입니다 (MIT / BSD / Apache-2.0). 자세한 내역은
+[`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)를 보세요.
+
+한 가지만 알아두시면 됩니다. `video` extra의 opencv-python 휠에는 **FFmpeg이
+같이 들어 있고 LGPL**입니다 (GPL 전용 컴포넌트는 빠진 빌드라 GPL이 아닙니다).
+newal은 의존성 이름만 적을 뿐 휠을 배포하지 않으므로 이 저장소에 붙는 의무는
+없습니다. 다만 `cv2`가 든 컨테이너 이미지나 설치본을 **재배포**하실 거라면
+그때는 LGPL 조건을 확인하셔야 합니다.
+
+모델 가중치는 이 라이선스와 무관하며 모델마다 다릅니다. 쓰실 모델의 카드를
+직접 확인하세요.

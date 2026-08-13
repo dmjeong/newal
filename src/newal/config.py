@@ -10,6 +10,7 @@ Env overrides use double underscores for nesting, e.g.
 from __future__ import annotations
 
 import os
+from importlib import resources
 from pathlib import Path
 from typing import Any, Literal
 
@@ -17,9 +18,27 @@ import yaml
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
-PROJECT_ROOT = PACKAGE_ROOT.parent.parent
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "default.yaml"
-LOCAL_CONFIG_PATH = PROJECT_ROOT / "configs" / "local.yaml"
+
+
+def _packaged_defaults() -> Path:
+    """Locate the shipped defaults inside the installed package.
+
+    They live in the package rather than beside it. Deriving the path from the
+    repository layout only works from a source checkout, so a plain
+    ``pip install`` used to land on a path that does not exist and fail
+    validation before the first prompt.
+    """
+    try:
+        return Path(str(resources.files("newal") / "data" / "default.yaml"))
+    except (ModuleNotFoundError, AttributeError, TypeError):  # pragma: no cover
+        return PACKAGE_ROOT / "data" / "default.yaml"
+
+
+#: Shipped defaults. Always present, in a checkout and in an install alike.
+DEFAULT_CONFIG_PATH = _packaged_defaults()
+#: User overrides, resolved against the working directory so the file belongs to
+#: the project being worked on rather than to wherever newal happens to live.
+LOCAL_CONFIG_RELATIVE = Path("configs") / "local.yaml"
 
 ENV_PREFIX = "NEWAL_"
 
@@ -339,7 +358,7 @@ def load_config(
 ) -> Config:
     """Build a :class:`Config` from the layered sources described above."""
     merged = _read_yaml(DEFAULT_CONFIG_PATH)
-    merged = _deep_merge(merged, _read_yaml(LOCAL_CONFIG_PATH))
+    merged = _deep_merge(merged, _read_yaml(Path.cwd() / LOCAL_CONFIG_RELATIVE))
 
     if config_path is not None:
         explicit = Path(config_path).expanduser()

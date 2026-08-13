@@ -124,3 +124,36 @@ def test_chunk_overlap_must_be_smaller_than_chunk_size():
 def test_invalid_enum_value_is_rejected():
     with pytest.raises(ValueError):
         Config.model_validate({"tools": {"shell_policy": "yolo"}})
+
+
+# ---- the defaults must travel with the package ------------------------------
+
+
+def test_shipped_defaults_live_inside_the_package():
+    """Deriving the path from the repo layout breaks a plain `pip install`.
+
+    The old code used PACKAGE_ROOT.parent.parent / "configs", which only
+    resolves in a source checkout. An installed copy landed on a path that did
+    not exist and failed validation before the first prompt.
+    """
+    from newal.config import DEFAULT_CONFIG_PATH, PACKAGE_ROOT
+
+    assert DEFAULT_CONFIG_PATH.is_file()
+    assert PACKAGE_ROOT in DEFAULT_CONFIG_PATH.parents
+
+
+def test_defaults_load_without_any_repo_files_present(tmp_path, monkeypatch):
+    """Running from an unrelated directory must still produce a valid config."""
+    monkeypatch.chdir(tmp_path)
+    config = load_config(use_env=False)
+    assert config.enabled_models(task="generate")
+
+
+def test_local_overrides_are_read_from_the_working_directory(tmp_path, monkeypatch):
+    (tmp_path / "configs").mkdir()
+    (tmp_path / "configs" / "local.yaml").write_text(
+        "router:\n  mode: heuristic\n", encoding="utf-8"
+    )
+    monkeypatch.chdir(tmp_path)
+
+    assert load_config(use_env=False).router.mode == "heuristic"

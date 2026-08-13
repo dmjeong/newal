@@ -4,11 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newal"
-version = "3.0.1"
+version = "3.0.2"
 description = "Local multimodal coding assistant powered by a pool of Qwen models (text + image + video)"
 readme = "README.md"
 requires-python = ">=3.10"
-license = { text = "MIT" }
+# PEP 639: SPDX expression, and the file that carries it.
+license = "MIT"
+license-files = ["LICENSE"]
 
 dependencies = [
     "openai>=1.40",
@@ -35,6 +37,10 @@ newal = "newal.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+# The shipped defaults must travel with the package, not with the repo.
+newal = ["data/*.yaml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
