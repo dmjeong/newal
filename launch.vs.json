@@ -19,7 +19,7 @@
       "interpreter": "venv/Scripts/python.exe",
       "interpreterArguments": "-m newal",
       "scriptArguments": "serve",
-      "name": "newal: start Qwen server only",
+      "name": "newal: start Qwen servers",
       "workingDirectory": "${workspaceRoot}",
       "env": {
         "PYTHONPATH": "${workspaceRoot}/src",

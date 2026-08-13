@@ -1,7 +1,15 @@
-"""Repository indexing and retrieval.
+"""Repository indexing and hybrid retrieval.
 
-Incremental: files whose mtime and size are unchanged are skipped, so a
-re-index of a large repo after one edit costs milliseconds.
+Retrieval runs in up to three stages, each optional and each degrading
+gracefully when its model is not enabled:
+
+1. **BM25** over chunk text -- always available, no model needed.
+2. **Dense** cosine similarity against embeddings from the ``embed`` pool
+   member, fused with BM25 by reciprocal rank.
+3. **Cross-encoder rerank** of the fused candidates by the ``rerank`` member.
+
+Indexing is incremental: files whose mtime and size are unchanged are skipped,
+so re-indexing a large repo after one edit costs milliseconds.
 """
 
 from __future__ import annotations
@@ -12,8 +20,11 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
+
 from ..config import MemoryConfig
 from .bm25 import BM25Index
+from .fusion import reciprocal_rank_fusion
 from .store import Chunk, MemoryStore
 
 log = logging.getLogger(__name__)
@@ -28,12 +39,15 @@ class IndexStats:
     files_skipped: int = 0
     files_removed: int = 0
     chunks_written: int = 0
+    chunks_embedded: int = 0
 
 
 @dataclass
 class Retrieved:
     chunk: Chunk
     score: float
+    #: Which stages contributed: "bm25", "dense", "rerank".
+    sources: tuple[str, ...] = ()
 
 
 def chunk_text(
@@ -103,13 +117,30 @@ def discover_files(root: Path, config: MemoryConfig) -> list[Path]:
 
 
 class RepoIndex:
-    """Owns the store plus a lazily rebuilt BM25 index over its chunks."""
+    """Owns the store, a lazily rebuilt BM25 index, and the retrieval models."""
 
-    def __init__(self, root: Path, config: MemoryConfig, store: MemoryStore) -> None:
+    def __init__(
+        self,
+        root: Path,
+        config: MemoryConfig,
+        store: MemoryStore,
+        *,
+        embedder: object | None = None,
+        reranker: object | None = None,
+    ) -> None:
         self.root = root
         self.config = config
         self.store = store
+        self.embedder = embedder
+        self.reranker = reranker
         self._bm25: BM25Index | None = None
+
+    def attach_models(self, *, embedder: object | None, reranker: object | None) -> None:
+        """Wire in retrieval models after the pool has started."""
+        self.embedder = embedder
+        self.reranker = reranker
+
+    # ---- indexing -------------------------------------------------------------
 
     def refresh(self) -> IndexStats:
         """Bring the index in line with what is on disk."""
@@ -154,7 +185,33 @@ class RepoIndex:
 
         if stats.files_indexed or stats.files_removed:
             self._bm25 = None  # invalidate; rebuilt on next search
+
+        stats.chunks_embedded = self.embed_pending()
         return stats
+
+    def embed_pending(self) -> int:
+        """Embed any chunks that do not have a vector yet.
+
+        Separate from ``refresh`` so indexing still works when the embedding
+        server is down -- retrieval simply falls back to BM25 alone.
+        """
+        if self.embedder is None or not self.config.hybrid_retrieval:
+            return 0
+
+        pending = self.store.chunks_missing_embeddings()
+        if not pending:
+            return 0
+
+        try:
+            vectors = self.embedder.embed([c.content for c in pending])  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - retrieval must degrade, not crash
+            log.warning("embedding pass failed, continuing with BM25 only: %s", exc)
+            return 0
+
+        self.store.set_embeddings(dict(zip((c.id for c in pending), vectors)))
+        return len(vectors)
+
+    # ---- retrieval ------------------------------------------------------------
 
     def _ensure_bm25(self) -> BM25Index:
         if self._bm25 is None:
@@ -165,54 +222,91 @@ class RepoIndex:
             )
         return self._bm25
 
-    def search(self, query: str, top_k: int | None = None) -> list[Retrieved]:
-        k = top_k or self.config.retrieve_top_k
-        hits = self._ensure_bm25().search(query, top_k=k * 3 if self._dense() else k)
-        if not hits:
+    def _dense_search(self, query: str, limit: int) -> list[str]:
+        """Rank chunk ids by cosine similarity to the query embedding."""
+        if self.embedder is None or not self.config.hybrid_retrieval:
             return []
 
-        chunks = self.store.get_chunks([doc_id for doc_id, _ in hits])
-        scores = dict(hits)
-        results = [Retrieved(chunk=c, score=scores.get(c.id, 0.0)) for c in chunks]
+        chunks = self.store.embedded_chunks()
+        if not chunks:
+            return []
 
-        if self._dense():
-            results = self._rerank(query, results)
-        return results[:k]
-
-    def _dense(self) -> bool:
-        return self.config.dense_rerank
-
-    def _rerank(self, query: str, candidates: list[Retrieved]) -> list[Retrieved]:
-        """Re-order BM25 candidates by embedding similarity, if available."""
         try:
-            from sentence_transformers import SentenceTransformer, util
-        except ImportError:
-            log.warning("dense_rerank is on but sentence-transformers is missing; "
-                        "install with: pip install 'newal[dense]'")
-            return candidates
+            query_vector = self.embedder.embed([query])[0]  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 - degrade to BM25
+            log.warning("dense search unavailable: %s", exc)
+            return []
 
-        model = _load_encoder(self.config.dense_model, SentenceTransformer)
-        query_vec = model.encode(query, convert_to_tensor=True, normalize_embeddings=True)
-        doc_vecs = model.encode(
-            [c.chunk.content for c in candidates],
-            convert_to_tensor=True,
-            normalize_embeddings=True,
-        )
-        sims = util.cos_sim(query_vec, doc_vecs)[0]
-        for candidate, sim in zip(candidates, sims):
-            candidate.score = float(sim)
-        candidates.sort(key=lambda r: -r.score)
-        return candidates
+        matrix = np.asarray([c.embedding for c in chunks], dtype=np.float32)
+        vector = np.asarray(query_vector, dtype=np.float32)
 
+        norms = np.linalg.norm(matrix, axis=1) * np.linalg.norm(vector)
+        # Guard against zero-norm rows rather than emitting nan into the ranking.
+        norms[norms == 0.0] = 1e-9
+        sims = (matrix @ vector) / norms
 
-_ENCODER_CACHE: dict[str, object] = {}
+        order = np.argsort(-sims)[:limit]
+        return [chunks[i].id for i in order]
 
+    def _rerank(self, query: str, candidates: list[Chunk], top_k: int) -> list[Retrieved]:
+        try:
+            scored = self.reranker.rerank(  # type: ignore[attr-defined]
+                query, [c.content for c in candidates], top_k=top_k
+            )
+        except Exception as exc:  # noqa: BLE001 - degrade to fused order
+            log.warning("rerank unavailable, keeping fused order: %s", exc)
+            return []
 
-def _load_encoder(name: str, factory: type) -> object:
-    """Cache the encoder; loading it per query dominates retrieval cost."""
-    if name not in _ENCODER_CACHE:
-        _ENCODER_CACHE[name] = factory(name)
-    return _ENCODER_CACHE[name]
+        results: list[Retrieved] = []
+        for item in scored:
+            if 0 <= item.index < len(candidates):
+                results.append(
+                    Retrieved(chunk=candidates[item.index], score=item.score,
+                              sources=("rerank",))
+                )
+        return results
+
+    def search(self, query: str, top_k: int | None = None) -> list[Retrieved]:
+        """Retrieve the most relevant chunks, using whichever stages are available."""
+        k = top_k or self.config.retrieve_top_k
+        if k <= 0:
+            return []
+
+        use_rerank = self.reranker is not None and self.config.use_reranker
+        candidate_k = max(k, self.config.rerank_candidates) if use_rerank else k * 2
+
+        bm25_ranking = [doc_id for doc_id, _ in self._ensure_bm25().search(query, candidate_k)]
+        dense_ranking = self._dense_search(query, candidate_k)
+
+        if not bm25_ranking and not dense_ranking:
+            return []
+
+        if dense_ranking:
+            weight = self.config.dense_weight
+            fused = reciprocal_rank_fusion(
+                {"bm25": bm25_ranking, "dense": dense_ranking},
+                weights={"bm25": 1.0 - weight, "dense": weight},
+            )
+        else:
+            fused = reciprocal_rank_fusion({"bm25": bm25_ranking})
+
+        ordered_ids = [hit.doc_id for hit in fused[:candidate_k]]
+        by_id = {c.id: c for c in self.store.get_chunks(ordered_ids)}
+        candidates = [by_id[doc_id] for doc_id in ordered_ids if doc_id in by_id]
+        if not candidates:
+            return []
+
+        if use_rerank:
+            reranked = self._rerank(query, candidates, k)
+            if reranked:
+                return reranked
+
+        sources = ("bm25", "dense") if dense_ranking else ("bm25",)
+        score_by_id = {hit.doc_id: hit.score for hit in fused}
+        return [
+            Retrieved(chunk=chunk, score=score_by_id.get(chunk.id, 0.0), sources=sources)
+            for chunk in candidates[:k]
+        ]
 
 
 def format_context(results: list[Retrieved], *, max_chars: int = 12000) -> str:

@@ -1,4 +1,4 @@
-"""Backend that talks to a local vLLM / SGLang OpenAI-compatible server."""
+"""Backend that talks to one local vLLM / SGLang OpenAI-compatible server."""
 
 from __future__ import annotations
 
@@ -6,54 +6,49 @@ import json
 import logging
 from typing import Any, Iterator
 
-from openai import OpenAI
-from openai import APIConnectionError, APIStatusError
+from openai import APIConnectionError, APIStatusError, OpenAI
 
-from ..config import Config
+from ..config import Config, ModelSpec
 from .base import Backend, BackendError, Completion, ToolCall, Usage
-from .launcher import ServerProcess, ensure_server
 
 log = logging.getLogger(__name__)
 
 
 class OpenAICompatBackend(Backend):
-    """Wraps the OpenAI SDK against a locally served Qwen model.
+    """Wraps the OpenAI SDK against one served Qwen model.
 
     Handles the two Qwen-specific wrinkles: the ``enable_thinking`` switch
     (passed through ``chat_template_kwargs``) and the ``reasoning_content``
     field that carries the thinking trace separately from the answer.
+
+    Server lifecycle is the pool's job, not this class's -- several backends
+    may share one process, and none of them should be able to kill it.
     """
 
-    def __init__(self, config: Config, *, autostart: bool = True) -> None:
+    def __init__(self, config: Config, key: str, spec: ModelSpec) -> None:
         self.config = config
-        self._server: ServerProcess | None = None
-
-        if autostart:
-            self._server = ensure_server(
-                config.model,
-                config.backend,
-                log_path=".newal/server.log",
-            )
+        self.key = key
+        self.spec = spec
 
         self._client = OpenAI(
-            base_url=config.backend.base_url,
-            api_key=config.backend.api_key or "EMPTY",
-            timeout=float(config.backend.request_timeout_s),
+            base_url=spec.base_url,
+            api_key=spec.api_key or "EMPTY",
+            timeout=float(config.runtime.request_timeout_s),
             max_retries=2,
         )
-        self._model_id = self._resolve_served_model_id(config.model.id)
+        self._model_id = self._resolve_served_model_id(spec.id)
 
     def _resolve_served_model_id(self, configured: str) -> str:
         """Ask the server what name it serves the model under.
 
         vLLM defaults to the ``--model`` value, but a manually started server
-        may use ``--served-model-name``. Asking avoids a confusing 404.
+        may use a different ``--served-model-name``. Asking avoids a confusing 404.
         """
         try:
             models = self._client.models.list()
         except (APIConnectionError, APIStatusError) as exc:
             raise BackendError(
-                f"cannot reach inference server at {self.config.backend.base_url}: {exc}"
+                f"cannot reach server for {self.key!r} at {self.spec.base_url}: {exc}"
             ) from exc
 
         served = [m.id for m in models.data]
@@ -63,7 +58,8 @@ class OpenAICompatBackend(Backend):
             log.info("server serves %r; using that instead of %r", served[0], configured)
             return served[0]
         raise BackendError(
-            f"model {configured!r} is not served here. Available: {served or '(none)'}"
+            f"model {configured!r} is not served at {self.spec.base_url}. "
+            f"Available: {served or '(none)'}"
         )
 
     # ---- request construction -------------------------------------------------
@@ -74,15 +70,18 @@ class OpenAICompatBackend(Backend):
         temperature: float | None,
         max_tokens: int | None,
     ) -> dict[str, Any]:
-        model_cfg = self.config.model
-        thinking = model_cfg.enable_thinking if enable_thinking is None else enable_thinking
+        generation = self.config.generation
         return {
             "model": self._model_id,
-            "temperature": model_cfg.temperature if temperature is None else temperature,
-            "top_p": model_cfg.top_p,
-            "max_tokens": max_tokens or model_cfg.max_output_tokens,
+            "temperature": generation.temperature if temperature is None else temperature,
+            "top_p": generation.top_p,
+            "max_tokens": max_tokens or generation.max_output_tokens,
             # vLLM and SGLang both forward this into the Jinja chat template.
-            "extra_body": {"chat_template_kwargs": {"enable_thinking": thinking}},
+            "extra_body": {
+                "chat_template_kwargs": {
+                    "enable_thinking": True if enable_thinking is None else enable_thinking
+                }
+            },
         }
 
     # ---- Backend protocol -----------------------------------------------------
@@ -104,10 +103,10 @@ class OpenAICompatBackend(Backend):
         try:
             response = self._client.chat.completions.create(messages=messages, **kwargs)
         except (APIConnectionError, APIStatusError) as exc:
-            raise BackendError(f"completion request failed: {exc}") from exc
+            raise BackendError(f"completion request to {self.key!r} failed: {exc}") from exc
 
         if not response.choices:
-            raise BackendError("server returned no choices")
+            raise BackendError(f"server for {self.key!r} returned no choices")
 
         choice = response.choices[0]
         message = choice.message
@@ -126,6 +125,7 @@ class OpenAICompatBackend(Backend):
             tool_calls=_parse_tool_calls(message),
             finish_reason=choice.finish_reason or "stop",
             usage=usage,
+            model_key=self.key,
         )
 
     def stream(
@@ -148,12 +148,11 @@ class OpenAICompatBackend(Backend):
                 if piece:
                     yield piece
         except (APIConnectionError, APIStatusError) as exc:
-            raise BackendError(f"streaming request failed: {exc}") from exc
+            raise BackendError(f"streaming request to {self.key!r} failed: {exc}") from exc
 
     def close(self) -> None:
-        if self._server is not None:
-            self._server.stop()
-            self._server = None
+        # The pool owns the server process; nothing to release here.
+        return None
 
 
 def _parse_tool_calls(message: Any) -> list[ToolCall]:

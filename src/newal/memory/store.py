@@ -7,11 +7,21 @@ into the system prompt on the next run.
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 import time
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
+
+import numpy as np
+
+log = logging.getLogger(__name__)
+
+#: Bumped whenever the chunk/file tables change shape. The index is a
+#: rebuildable cache, so a mismatch drops and re-derives it rather than
+#: attempting a migration. Notes are user data and always survive.
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -20,7 +30,8 @@ CREATE TABLE IF NOT EXISTS chunks (
     start_line  INTEGER NOT NULL,
     end_line    INTEGER NOT NULL,
     content     TEXT NOT NULL,
-    mtime       REAL NOT NULL
+    mtime       REAL NOT NULL,
+    embedding   BLOB
 );
 CREATE INDEX IF NOT EXISTS idx_chunks_path ON chunks(path);
 
@@ -47,9 +58,23 @@ class Chunk:
     start_line: int
     end_line: int
     content: str
+    embedding: list[float] | None = None
 
     def cite(self) -> str:
         return f"{self.path}:{self.start_line}-{self.end_line}"
+
+
+def pack_embedding(vector: list[float] | None) -> bytes | None:
+    """Serialise an embedding as float32 bytes."""
+    if not vector:
+        return None
+    return np.asarray(vector, dtype=np.float32).tobytes()
+
+
+def unpack_embedding(blob: bytes | None) -> list[float] | None:
+    if not blob:
+        return None
+    return np.frombuffer(blob, dtype=np.float32).tolist()
 
 
 @dataclass
@@ -71,6 +96,23 @@ class MemoryStore:
         with closing(self._conn.cursor()) as cursor:
             cursor.executescript(SCHEMA)
         self._conn.commit()
+        self._apply_schema_version()
+
+    def _apply_schema_version(self) -> None:
+        """Drop the derived index if it was built by an older schema."""
+        found = int(self._conn.execute("PRAGMA user_version").fetchone()[0])
+        if found == SCHEMA_VERSION:
+            return
+        if found != 0:
+            log.info("memory schema %s -> %s; rebuilding index", found, SCHEMA_VERSION)
+            with self._conn:
+                # Notes are user data and deliberately untouched.
+                self._conn.execute("DROP TABLE IF EXISTS chunks")
+                self._conn.execute("DROP TABLE IF EXISTS files")
+            with closing(self._conn.cursor()) as cursor:
+                cursor.executescript(SCHEMA)
+        with self._conn:
+            self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
         self._conn.close()
@@ -98,13 +140,62 @@ class MemoryStore:
             self._conn.execute("DELETE FROM chunks WHERE path = ?", (path,))
             self._conn.executemany(
                 "INSERT OR REPLACE INTO chunks "
-                "(id, path, start_line, end_line, content, mtime) VALUES (?, ?, ?, ?, ?, ?)",
-                [(c.id, c.path, c.start_line, c.end_line, c.content, mtime) for c in chunks],
+                "(id, path, start_line, end_line, content, mtime, embedding) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                [
+                    (
+                        c.id,
+                        c.path,
+                        c.start_line,
+                        c.end_line,
+                        c.content,
+                        mtime,
+                        pack_embedding(c.embedding),
+                    )
+                    for c in chunks
+                ],
             )
             self._conn.execute(
                 "INSERT OR REPLACE INTO files (path, mtime, size) VALUES (?, ?, ?)",
                 (path, mtime, size),
             )
+
+    def set_embeddings(self, vectors: dict[str, list[float]]) -> None:
+        """Attach embeddings to chunks that were indexed without them."""
+        if not vectors:
+            return
+        with self._conn:
+            self._conn.executemany(
+                "UPDATE chunks SET embedding = ? WHERE id = ?",
+                [(pack_embedding(vec), chunk_id) for chunk_id, vec in vectors.items()],
+            )
+
+    def chunks_missing_embeddings(self, limit: int | None = None) -> list[Chunk]:
+        sql = (
+            "SELECT id, path, start_line, end_line, content FROM chunks "
+            "WHERE embedding IS NULL"
+        )
+        if limit:
+            sql += f" LIMIT {int(limit)}"
+        return [Chunk(**dict(row)) for row in self._conn.execute(sql).fetchall()]
+
+    def embedded_chunks(self) -> list[Chunk]:
+        """Every chunk that has an embedding, for dense search."""
+        rows = self._conn.execute(
+            "SELECT id, path, start_line, end_line, content, embedding FROM chunks "
+            "WHERE embedding IS NOT NULL"
+        ).fetchall()
+        return [
+            Chunk(
+                id=row["id"],
+                path=row["path"],
+                start_line=row["start_line"],
+                end_line=row["end_line"],
+                content=row["content"],
+                embedding=unpack_embedding(row["embedding"]),
+            )
+            for row in rows
+        ]
 
     def forget_file(self, path: str) -> None:
         with self._conn:
@@ -118,6 +209,13 @@ class MemoryStore:
             "SELECT id, path, start_line, end_line, content FROM chunks"
         ).fetchall()
         return [Chunk(**dict(row)) for row in rows]
+
+    def chunks_without_embeddings_count(self) -> int:
+        return int(
+            self._conn.execute(
+                "SELECT COUNT(*) FROM chunks WHERE embedding IS NULL"
+            ).fetchone()[0]
+        )
 
     def get_chunks(self, ids: list[str]) -> list[Chunk]:
         if not ids:

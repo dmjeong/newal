@@ -1,4 +1,10 @@
-"""The agent loop: plan, act with tools, then verify and repair."""
+"""The agent loop: route, plan, act with tools, then verify and repair.
+
+Every model call goes through the router, so the tier and the thinking mode are
+decided from what is actually happening -- how the request reads, whether tools
+have been failing, whether verification already rejected the work -- rather than
+being fixed in config.
+"""
 
 from __future__ import annotations
 
@@ -7,10 +13,11 @@ import platform
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
-from ..backends.base import Backend, Completion, ToolCall, Usage
+from ..backends.base import Completion, ToolCall, Usage
 from ..config import Config
 from ..media import Attachment
 from ..memory import RepoIndex
+from ..models import ModelPool, Role, Route, RouteSignals
 from .prompts import PLAN_PROMPT, VERIFY_PROMPT, VIDEO_HINT, build_system_prompt, load_project_doc
 from .tools import Toolbox, ToolResult
 from .verifier import VerificationResult, run_verification
@@ -18,7 +25,7 @@ from .verifier import VerificationResult, run_verification
 log = logging.getLogger(__name__)
 
 EventKind = Literal[
-    "phase", "thinking", "assistant", "tool_call", "tool_result", "verify", "warning"
+    "phase", "route", "thinking", "assistant", "tool_call", "tool_result", "verify", "warning"
 ]
 EventCallback = Callable[[EventKind, str], None]
 
@@ -27,6 +34,8 @@ CONTEXT_SAFETY_MARGIN = 4096
 # Rough chars-per-token for mixed prose and code. Only used for trimming
 # decisions, so a coarse estimate is fine.
 CHARS_PER_TOKEN = 3.5
+# Read-only tools the planning phase is allowed to touch.
+PLANNING_TOOLS = frozenset({"read_file", "list_dir", "grep", "search_memory"})
 
 
 @dataclass
@@ -34,30 +43,29 @@ class AgentResult:
     text: str
     steps: int
     usage: Usage = field(default_factory=Usage)
+    usage_by_model: dict[str, Usage] = field(default_factory=dict)
     files_written: list[str] = field(default_factory=list)
     verification: VerificationResult | None = None
     plan: str | None = None
+    routes: list[str] = field(default_factory=list)
+    escalations: int = 0
     hit_step_limit: bool = False
 
 
 class Agent:
-    """Stateful conversation over a workspace.
-
-    One instance per session: it keeps the message history so follow-up turns
-    reuse everything already established.
-    """
+    """Stateful conversation over a workspace, backed by a pool of models."""
 
     def __init__(
         self,
         config: Config,
-        backend: Backend,
+        pool: ModelPool,
         toolbox: Toolbox,
         *,
         index: RepoIndex | None = None,
         on_event: EventCallback | None = None,
     ) -> None:
         self.config = config
-        self.backend = backend
+        self.pool = pool
         self.toolbox = toolbox
         self.index = index
         self._emit = on_event or (lambda _kind, _text: None)
@@ -65,6 +73,16 @@ class Agent:
             {"role": "system", "content": self._system_prompt()}
         ]
         self.usage = Usage()
+        self.usage_by_model: dict[str, Usage] = {}
+
+        # Per-turn routing state.
+        self._prompt = ""
+        self._has_attachments = False
+        self._has_video = False
+        self._tool_errors = 0
+        self._verification_failed = False
+        self._escalations = 0
+        self._routes: list[str] = []
 
     def _system_prompt(self) -> str:
         notes: list[str] = []
@@ -80,12 +98,61 @@ class Agent:
             project_doc=load_project_doc(self.toolbox.workspace.root),
         )
 
+    # ---- routing --------------------------------------------------------------
+
+    def _signals(self, *, attempt: int = 0) -> RouteSignals:
+        return RouteSignals(
+            prompt=self._prompt,
+            has_attachments=self._has_attachments,
+            has_video=self._has_video,
+            attempt=attempt,
+            tool_errors=self._tool_errors,
+            verification_failed=self._verification_failed,
+            files_touched=len(self.toolbox.files_written),
+        )
+
+    def _call(
+        self,
+        role: Role,
+        messages: list[dict[str, Any]],
+        *,
+        tools: list[dict[str, Any]] | None = None,
+        route: Route | None = None,
+        attempt: int = 0,
+    ) -> tuple[Completion, Route]:
+        """Route and execute one model call, recording usage against its model."""
+        if route is None:
+            route = self.pool.router.route(role, self._signals(attempt=attempt))
+
+        self._routes.append(route.describe())
+        if self.config.router.explain:
+            self._emit("route", f"{route.describe()} :: {'; '.join(route.reasons)}")
+
+        backend = self.pool.for_route(route)
+        completion = backend.complete(
+            messages, tools=tools, enable_thinking=route.enable_thinking
+        )
+
+        key = completion.model_key or route.model_key
+        self.usage = self.usage + completion.usage
+        self.usage_by_model[key] = self.usage_by_model.get(key, Usage()) + completion.usage
+        return completion, route
+
     # ---- public entry point ---------------------------------------------------
 
     def run(
         self, user_text: str, attachments: list[Attachment] | None = None
     ) -> AgentResult:
         attachments = attachments or []
+
+        self._prompt = user_text
+        self._has_attachments = bool(attachments)
+        self._has_video = any(a.kind == "video" for a in attachments)
+        self._tool_errors = 0
+        self._verification_failed = False
+        self._escalations = 0
+        self._routes = []
+
         self.messages.append(self._user_message(user_text, attachments))
         self.toolbox.files_written.clear()
 
@@ -101,6 +168,9 @@ class Agent:
 
         result.files_written = sorted(self.toolbox.files_written)
         result.usage = self.usage
+        result.usage_by_model = dict(self.usage_by_model)
+        result.routes = list(self._routes)
+        result.escalations = self._escalations
         return result
 
     # ---- phases ---------------------------------------------------------------
@@ -111,18 +181,16 @@ class Agent:
         read_only = [
             schema
             for schema in self.toolbox.schemas()
-            if schema["function"]["name"] in {"read_file", "list_dir", "grep", "search_memory"}
+            if schema["function"]["name"] in PLANNING_TOOLS
         ]
         probe = self.messages + [{"role": "user", "content": PLAN_PROMPT}]
 
         try:
-            completion = self.backend.complete(probe, tools=read_only, enable_thinking=True)
+            completion, route = self._call(Role.PLAN, probe, tools=read_only)
         except Exception as exc:  # noqa: BLE001 - planning is best-effort
             log.warning("planning turn failed, continuing without a plan: %s", exc)
             self._emit("warning", f"planning skipped: {exc}")
             return None
-
-        self.usage = self.usage + completion.usage
 
         # The planner may call read-only tools; let it finish those before we
         # take its plan text.
@@ -133,8 +201,7 @@ class Agent:
                 self._emit("tool_call", f"{call.name} {_short_args(call)}")
                 result = self.toolbox.call(call.name, call.arguments)
                 probe.append(_tool_message(call, result))
-            completion = self.backend.complete(probe, tools=read_only, enable_thinking=True)
-            self.usage = self.usage + completion.usage
+            completion, route = self._call(Role.PLAN, probe, tools=read_only, route=route)
             steps += 1
 
         plan = completion.text.strip()
@@ -149,11 +216,13 @@ class Agent:
         self._emit("phase", "working")
         tools = self.toolbox.schemas()
         steps = 0
+        route: Route | None = None
 
         while steps < self.config.agent.max_steps:
             self._trim_history()
-            completion = self.backend.complete(self.messages, tools=tools)
-            self.usage = self.usage + completion.usage
+
+            role = Role.VISION if self._has_attachments and steps == 0 else Role.CODE
+            completion, route = self._call(role, self.messages, tools=tools, route=route)
             steps += 1
 
             if completion.reasoning and self.config.ui.show_thinking:
@@ -169,11 +238,16 @@ class Agent:
             if completion.text.strip():
                 self._emit("assistant", completion.text.strip())
 
+            errors_before = self._tool_errors
             for call in completion.tool_calls:
                 self._emit("tool_call", f"{call.name} {_short_args(call)}")
                 result = self.toolbox.call(call.name, call.arguments)
+                if result.is_error:
+                    self._tool_errors += 1
                 self._emit("tool_result", _preview(result))
                 self.messages.append(_tool_message(call, result))
+
+            route = self._maybe_escalate(route, errors_before)
 
         self._emit("warning", f"stopped after {steps} steps (agent.max_steps)")
         return AgentResult(
@@ -185,6 +259,25 @@ class Agent:
             hit_step_limit=True,
         )
 
+    def _maybe_escalate(self, route: Route | None, errors_before: int) -> Route | None:
+        """Move up a tier when tools keep failing at the current one.
+
+        Repeated tool errors are the cheap in-loop analogue of a failed test:
+        evidence from execution, not from a second model's opinion.
+        """
+        if route is None or self._tool_errors == errors_before:
+            return route
+        if self._escalations >= self.config.router.max_escalations:
+            return route
+
+        stronger = self.pool.router.escalate(route, f"{self._tool_errors} tool error(s)")
+        if stronger is None:
+            return route
+
+        self._escalations += 1
+        self._emit("route", f"escalating to {stronger.model_key} after tool errors")
+        return stronger
+
     def _verify_and_repair(self, result: AgentResult) -> VerificationResult:
         """Run the project's tests; on failure, hand the output back for repair."""
         self._emit("phase", "verifying")
@@ -195,6 +288,7 @@ class Agent:
             self._emit("verify", verification.output if verification.skipped else "passed")
             return verification
 
+        self._verification_failed = True
         for attempt in range(1, self.config.agent.max_verify_retries + 1):
             self._emit("verify", f"failed (repair attempt {attempt})")
             self.messages.append(
@@ -206,7 +300,12 @@ class Agent:
                     ),
                 }
             )
-            repair = self._act()
+            # Repair always runs on the strongest tier: ground truth has already
+            # said the cheap answer was wrong.
+            repair_route = self.pool.router.route(
+                Role.REPAIR, self._signals(attempt=attempt)
+            )
+            repair = self._act_with_route(repair_route)
             result.text = repair.text
             result.steps += repair.steps
 
@@ -220,6 +319,37 @@ class Agent:
         self._emit("verify", "still failing after all repair attempts")
         return verification
 
+    def _act_with_route(self, route: Route) -> AgentResult:
+        """Run the acting loop pinned to a specific route."""
+        self._emit("phase", f"repairing via {route.model_key}")
+        tools = self.toolbox.schemas()
+        steps = 0
+
+        while steps < self.config.agent.max_steps:
+            self._trim_history()
+            completion, _ = self._call(Role.REPAIR, self.messages, tools=tools, route=route)
+            steps += 1
+
+            if not completion.wants_tools:
+                text = completion.text.strip()
+                self.messages.append({"role": "assistant", "content": text})
+                self._emit("assistant", text)
+                return AgentResult(text=text, steps=steps)
+
+            self.messages.append(_assistant_message(completion))
+            if completion.text.strip():
+                self._emit("assistant", completion.text.strip())
+            for call in completion.tool_calls:
+                self._emit("tool_call", f"{call.name} {_short_args(call)}")
+                result = self.toolbox.call(call.name, call.arguments)
+                if result.is_error:
+                    self._tool_errors += 1
+                self._emit("tool_result", _preview(result))
+                self.messages.append(_tool_message(call, result))
+
+        return AgentResult(text="repair loop hit the step limit", steps=steps,
+                           hit_step_limit=True)
+
     # ---- message construction -------------------------------------------------
 
     def _user_message(self, text: str, attachments: list[Attachment]) -> dict[str, Any]:
@@ -228,8 +358,9 @@ class Agent:
 
         parts: list[dict[str, Any]] = []
         for attachment in attachments:
-            parts.append({"type": "text", "text": f"[attached {attachment.kind}: "
-                                                  f"{attachment.summary}]"})
+            parts.append(
+                {"type": "text", "text": f"[attached {attachment.kind}: {attachment.summary}]"}
+            )
             parts.extend(attachment.parts)
         if any(a.kind == "video" for a in attachments):
             parts.append({"type": "text", "text": VIDEO_HINT})
@@ -243,7 +374,7 @@ class Agent:
         tool result is never separated from the assistant message that asked
         for it -- an orphaned tool message is a hard API error.
         """
-        limit = self.config.model.context_length - self.config.model.max_output_tokens
+        limit = self.config.generation.context_length - self.config.generation.max_output_tokens
         limit -= CONTEXT_SAFETY_MARGIN
         if limit <= 0 or self._estimated_tokens() <= limit:
             return
@@ -285,6 +416,7 @@ class Agent:
         """Clear the conversation, keeping the workspace and memory."""
         self.messages = [{"role": "system", "content": self._system_prompt()}]
         self.usage = Usage()
+        self.usage_by_model = {}
 
 
 # ---- message helpers ----------------------------------------------------------

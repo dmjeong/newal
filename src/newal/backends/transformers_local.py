@@ -12,7 +12,7 @@ import logging
 import re
 from typing import Any, Iterator
 
-from ..config import Config
+from ..config import Config, ModelSpec
 from .base import Backend, BackendError, Completion, ToolCall, Usage
 
 log = logging.getLogger(__name__)
@@ -23,7 +23,7 @@ THINK_RE = re.compile(r"<think>(.*?)</think>", re.DOTALL)
 
 
 class TransformersBackend(Backend):
-    def __init__(self, config: Config) -> None:
+    def __init__(self, config: Config, key: str, spec: ModelSpec) -> None:
         try:
             import torch
             from transformers import AutoModelForMultimodalLM, AutoProcessor
@@ -34,12 +34,14 @@ class TransformersBackend(Backend):
             ) from exc
 
         self.config = config
+        self.key = key
+        self.spec = spec
         self._torch = torch
 
-        log.info("loading %s in-process (this can take several minutes)", config.model.id)
-        self._processor = AutoProcessor.from_pretrained(config.model.id)
+        log.info("loading %s in-process (this can take several minutes)", spec.id)
+        self._processor = AutoProcessor.from_pretrained(spec.id)
         self._model = AutoModelForMultimodalLM.from_pretrained(
-            config.model.id,
+            spec.id,
             device_map="auto",
             dtype="auto",
         )
@@ -53,8 +55,8 @@ class TransformersBackend(Backend):
         temperature: float | None,
         max_tokens: int | None,
     ) -> tuple[str, Usage]:
-        model_cfg = self.config.model
-        thinking = model_cfg.enable_thinking if enable_thinking is None else enable_thinking
+        model_cfg = self.config.generation
+        thinking = True if enable_thinking is None else enable_thinking
 
         template_kwargs: dict[str, Any] = {
             "add_generation_prompt": True,
@@ -123,6 +125,7 @@ class TransformersBackend(Backend):
             tool_calls=tool_calls,
             finish_reason="tool_calls" if tool_calls else "stop",
             usage=usage,
+            model_key=self.key,
         )
 
     def stream(

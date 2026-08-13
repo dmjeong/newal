@@ -1,16 +1,15 @@
-"""Start and health-check a local vLLM / SGLang server.
+"""Start and health-check local vLLM / SGLang servers.
 
-The assistant is meant to be launched with one command, so if nothing is
-listening on ``backend.base_url`` we spawn the engine ourselves and wait for
-the OpenAI-compatible endpoint to come up.
+Each pool member is its own server process on its own port, so the launcher
+must be able to bring up several and shut them all down together.
 """
 
 from __future__ import annotations
 
 import atexit
+import json
 import logging
 import os
-import shutil
 import signal
 import subprocess
 import sys
@@ -19,7 +18,7 @@ from urllib.parse import urlparse
 
 import httpx
 
-from ..config import BackendConfig, ModelConfig
+from ..config import Config, ModelSpec
 
 log = logging.getLogger(__name__)
 
@@ -33,11 +32,6 @@ class ServerStartError(RuntimeError):
     pass
 
 
-def _root_url(base_url: str) -> str:
-    parsed = urlparse(base_url)
-    return f"{parsed.scheme}://{parsed.netloc}"
-
-
 def is_server_up(base_url: str, timeout: float = 2.0) -> bool:
     """Return True if an OpenAI-compatible server answers at ``base_url``."""
     try:
@@ -47,72 +41,122 @@ def is_server_up(base_url: str, timeout: float = 2.0) -> bool:
     return response.status_code < 500
 
 
-def build_command(model: ModelConfig, backend: BackendConfig) -> list[str]:
-    """Build the engine command line. Kept pure so it is easy to test."""
-    parsed = urlparse(backend.base_url)
-    host = parsed.hostname or "127.0.0.1"
-    port = str(parsed.port or 8000)
+def _host_port(base_url: str) -> tuple[str, str]:
+    parsed = urlparse(base_url)
+    return parsed.hostname or "127.0.0.1", str(parsed.port or 8000)
 
-    if backend.engine == "vllm":
+
+def build_command(config: Config, key: str, spec: ModelSpec) -> list[str]:
+    """Build the engine command line for one pool member.
+
+    Kept pure so the flags -- especially the speculative-decoding and task
+    settings, which are easy to get subtly wrong -- can be asserted in tests.
+    """
+    host, port = _host_port(spec.base_url)
+    params = config.serving_params(spec)
+
+    if config.runtime.engine == "vllm":
         cmd = [
             sys.executable,
             "-m",
             "vllm.entrypoints.openai.api_server",
             "--model",
-            model.id,
+            spec.id,
+            "--served-model-name",
+            spec.id,
             "--host",
             host,
             "--port",
             port,
             "--max-model-len",
-            str(backend.max_model_len),
+            str(params["max_model_len"]),
             "--gpu-memory-utilization",
-            str(backend.gpu_memory_utilization),
+            str(params["gpu_memory_utilization"]),
             "--tensor-parallel-size",
-            str(backend.tensor_parallel_size),
-            "--reasoning-parser",
-            QWEN_REASONING_PARSER,
-            "--enable-auto-tool-choice",
-            "--tool-call-parser",
-            QWEN_TOOL_PARSER,
+            str(params["tensor_parallel_size"]),
         ]
-        if backend.quantization:
-            cmd += ["--quantization", backend.quantization]
-    elif backend.engine == "sglang":
+
+        if spec.task == "generate":
+            cmd += [
+                "--reasoning-parser",
+                QWEN_REASONING_PARSER,
+                "--enable-auto-tool-choice",
+                "--tool-call-parser",
+                QWEN_TOOL_PARSER,
+            ]
+            if spec.speculative_draft:
+                # Draft-model speculation: the small model proposes
+                # `num_speculative_tokens` ahead and the target verifies them in
+                # one forward pass. Accepted tokens are sampled from the target's
+                # own distribution, so quality is unchanged.
+                cmd += [
+                    "--speculative-config",
+                    json.dumps(
+                        {
+                            "model": spec.speculative_draft,
+                            "num_speculative_tokens": spec.speculative_tokens,
+                        }
+                    ),
+                ]
+        elif spec.task == "embed":
+            cmd += ["--task", "embed"]
+        elif spec.task == "rerank":
+            cmd += ["--task", "score"]
+
+        if params["quantization"]:
+            cmd += ["--quantization", params["quantization"]]
+
+    elif config.runtime.engine == "sglang":
         cmd = [
             sys.executable,
             "-m",
             "sglang.launch_server",
             "--model-path",
-            model.id,
+            spec.id,
             "--host",
             host,
             "--port",
             port,
             "--context-length",
-            str(backend.max_model_len),
+            str(params["max_model_len"]),
             "--mem-fraction-static",
-            str(backend.gpu_memory_utilization),
+            str(params["gpu_memory_utilization"]),
             "--tp-size",
-            str(backend.tensor_parallel_size),
-            "--reasoning-parser",
-            QWEN_REASONING_PARSER,
-            "--tool-call-parser",
-            QWEN_TOOL_PARSER,
+            str(params["tensor_parallel_size"]),
         ]
-        if backend.quantization:
-            cmd += ["--quantization", backend.quantization]
-    else:  # pragma: no cover - guarded by pydantic Literal
-        raise ServerStartError(f"unknown engine: {backend.engine}")
+        if spec.task == "generate":
+            cmd += [
+                "--reasoning-parser",
+                QWEN_REASONING_PARSER,
+                "--tool-call-parser",
+                QWEN_TOOL_PARSER,
+            ]
+            if spec.speculative_draft:
+                cmd += [
+                    "--speculative-algorithm",
+                    "EAGLE",
+                    "--speculative-draft-model-path",
+                    spec.speculative_draft,
+                    "--speculative-num-steps",
+                    str(spec.speculative_tokens),
+                ]
+        elif spec.task in ("embed", "rerank"):
+            cmd += ["--is-embedding"]
 
-    return cmd + list(backend.extra_args)
+        if params["quantization"]:
+            cmd += ["--quantization", params["quantization"]]
+    else:  # pragma: no cover - guarded by pydantic Literal
+        raise ServerStartError(f"unknown engine: {config.runtime.engine}")
+
+    return cmd + list(params["extra_args"])
 
 
 class ServerProcess:
     """Owns a spawned engine process and shuts it down on exit."""
 
-    def __init__(self, process: subprocess.Popen, base_url: str) -> None:
+    def __init__(self, process: subprocess.Popen, key: str, base_url: str) -> None:
         self._process = process
+        self.key = key
         self.base_url = base_url
         atexit.register(self.stop)
 
@@ -126,7 +170,7 @@ class ServerProcess:
     def stop(self, timeout: float = 20.0) -> None:
         if self._process.poll() is not None:
             return
-        log.info("stopping inference server (pid %s)", self._process.pid)
+        log.info("stopping %s server (pid %s)", self.key, self._process.pid)
         # Kill the whole group: vLLM spawns worker children that outlive the
         # parent if signalled individually.
         try:
@@ -140,82 +184,75 @@ class ServerProcess:
         try:
             self._process.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            log.warning("server did not exit in %ss, killing", timeout)
+            log.warning("%s did not exit in %ss, killing", self.key, timeout)
             self._process.kill()
 
 
 def ensure_server(
-    model: ModelConfig,
-    backend: BackendConfig,
+    config: Config,
+    key: str,
+    spec: ModelSpec,
     *,
-    log_path: str | None = None,
+    log_dir: str = ".newal",
 ) -> ServerProcess | None:
-    """Make sure a server is reachable, starting one if needed.
+    """Make sure a server for ``spec`` is reachable, starting one if needed.
 
     Returns the spawned process, or ``None`` when a server was already up (in
     which case we must not manage its lifetime).
     """
-    if is_server_up(backend.base_url):
-        log.info("reusing inference server already listening at %s", backend.base_url)
+    if is_server_up(spec.base_url):
+        log.info("reusing server already listening at %s for %s", spec.base_url, key)
         return None
 
-    if not backend.autostart:
+    if not (spec.autostart and config.runtime.autostart):
         raise ServerStartError(
-            f"no server at {backend.base_url} and backend.autostart is false. "
-            f"Start one manually, e.g.:\n  {' '.join(build_command(model, backend))}"
+            f"no server at {spec.base_url} for model {key!r} and autostart is off. "
+            f"Start one manually:\n  {' '.join(build_command(config, key, spec))}"
         )
 
-    module = "vllm" if backend.engine == "vllm" else "sglang"
-    if shutil.which(sys.executable) is None:  # pragma: no cover - paranoia
-        raise ServerStartError("cannot locate the current Python interpreter")
+    cmd = build_command(config, key, spec)
+    log.info("starting %s: %s", key, " ".join(cmd))
 
-    cmd = build_command(model, backend)
-    log.info("starting %s: %s", module, " ".join(cmd))
+    os.makedirs(log_dir, exist_ok=True)
+    log_path = os.path.join(log_dir, f"server-{key}.log")
+    stdout = open(log_path, "ab", buffering=0)  # noqa: SIM115 - lives with process
 
-    stdout: int | object = subprocess.DEVNULL
-    if log_path:
-        os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-        stdout = open(log_path, "ab", buffering=0)  # noqa: SIM115 - lives with process
-
-    popen_kwargs: dict[str, object] = {
-        "stdout": stdout,
-        "stderr": subprocess.STDOUT,
-    }
+    popen_kwargs: dict[str, object] = {"stdout": stdout, "stderr": subprocess.STDOUT}
     if os.name == "posix":
         popen_kwargs["start_new_session"] = True
 
     try:
         process = subprocess.Popen(cmd, **popen_kwargs)  # type: ignore[arg-type]
     except FileNotFoundError as exc:
+        engine = config.runtime.engine
         raise ServerStartError(
-            f"could not launch {module}. Install it with: pip install {module}"
+            f"could not launch {engine}. Install it with: pip install {engine}"
         ) from exc
 
-    server = ServerProcess(process, backend.base_url)
-    _wait_until_ready(server, backend, log_path)
+    server = ServerProcess(process, key, spec.base_url)
+    _wait_until_ready(server, config, spec, log_path)
     return server
 
 
 def _wait_until_ready(
-    server: ServerProcess, backend: BackendConfig, log_path: str | None
+    server: ServerProcess, config: Config, spec: ModelSpec, log_path: str
 ) -> None:
-    deadline = time.monotonic() + backend.startup_timeout_s
+    deadline = time.monotonic() + config.runtime.startup_timeout_s
     while time.monotonic() < deadline:
         if not server.is_running():
-            hint = f" See {log_path} for details." if log_path else ""
             raise ServerStartError(
-                f"inference server exited during startup.{hint} "
-                "Common causes: not enough VRAM (lower backend.max_model_len or "
-                "gpu_memory_utilization), or the model id is wrong."
+                f"server for {server.key!r} exited during startup. See {log_path}. "
+                "Common causes: not enough VRAM (lower runtime.max_model_len or "
+                "gpu_memory_utilization, or disable a pool member), or a wrong model id."
             )
-        if is_server_up(backend.base_url):
-            log.info("inference server ready at %s", backend.base_url)
+        if is_server_up(spec.base_url):
+            log.info("%s ready at %s", server.key, spec.base_url)
             return
         time.sleep(2.0)
 
     server.stop()
     raise ServerStartError(
-        f"server did not become ready within {backend.startup_timeout_s}s. "
-        "First run downloads weights, which can take a while -- raise "
-        "backend.startup_timeout_s and try again."
+        f"server for {server.key!r} did not become ready within "
+        f"{config.runtime.startup_timeout_s}s. First run downloads weights, which "
+        "can take a while -- raise runtime.startup_timeout_s and try again."
     )

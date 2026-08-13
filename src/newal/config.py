@@ -4,7 +4,7 @@ Layering, lowest priority first:
   configs/default.yaml  ->  configs/local.yaml  ->  --config FILE  ->  NEWAL_* env vars
 
 Env overrides use double underscores for nesting, e.g.
-``NEWAL_MODEL__ID=Qwen/Qwen3.5-9B`` or ``NEWAL_BACKEND__BASE_URL=...``.
+``NEWAL_MODELS__HEAVY__ID=Qwen/Qwen3.5-27B`` or ``NEWAL_ROUTER__STRATEGY=single``.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 PACKAGE_ROOT = Path(__file__).resolve().parent
 PROJECT_ROOT = PACKAGE_ROOT.parent.parent
@@ -23,29 +23,90 @@ LOCAL_CONFIG_PATH = PROJECT_ROOT / "configs" / "local.yaml"
 
 ENV_PREFIX = "NEWAL_"
 
+ModelTask = Literal["generate", "embed", "rerank"]
 
-class ModelConfig(BaseModel):
-    id: str = "Qwen/Qwen3.6-35B-A3B"
+
+class GenerationConfig(BaseModel):
+    """Sampling defaults shared by every generation model in the pool."""
+
     context_length: int = 262144
-    enable_thinking: bool = True
     temperature: float = 0.7
     top_p: float = 0.95
     max_output_tokens: int = 32768
 
 
-class BackendConfig(BaseModel):
-    kind: Literal["openai_compat", "transformers"] = "openai_compat"
-    base_url: str = "http://127.0.0.1:8000/v1"
+class ModelSpec(BaseModel):
+    """One member of the model pool.
+
+    Serving fields left as ``None`` inherit from :class:`RuntimeConfig`, so a
+    pool member only has to state what makes it different.
+    """
+
+    id: str
+    base_url: str
     api_key: str = "EMPTY"
-    request_timeout_s: int = 600
+    task: ModelTask = "generate"
+    #: Cascade position. Higher is stronger and more expensive.
+    tier: int = 1
+    enabled: bool = True
     autostart: bool = True
+
+    max_model_len: int | None = None
+    gpu_memory_utilization: float | None = None
+    tensor_parallel_size: int | None = None
+    quantization: str | None = None
+
+    #: Draft model for speculative decoding. Output is distribution-identical
+    #: to decoding without it, so this is speed with no quality tradeoff.
+    speculative_draft: str | None = None
+    speculative_tokens: int = 3
+
+    extra_args: list[str] = Field(default_factory=list)
+
+
+class RuntimeConfig(BaseModel):
+    """Serving defaults applied to every pool member that does not override them."""
+
+    kind: Literal["openai_compat", "transformers"] = "openai_compat"
     engine: Literal["vllm", "sglang"] = "vllm"
+    autostart: bool = True
+    request_timeout_s: int = 600
     gpu_memory_utilization: float = 0.90
     tensor_parallel_size: int = 1
     max_model_len: int = 65536
     quantization: str | None = None
     startup_timeout_s: int = 900
     extra_args: list[str] = Field(default_factory=list)
+
+
+class ThinkingConfig(BaseModel):
+    #: always | never | adaptive (decide per call from a difficulty score)
+    mode: Literal["always", "never", "adaptive"] = "adaptive"
+    threshold: float = 0.55
+
+    @field_validator("threshold")
+    @classmethod
+    def _in_unit_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("thinking.threshold must be between 0 and 1")
+        return v
+
+
+class RouterConfig(BaseModel):
+    #: single -> always use the strongest model; cascade -> route by difficulty.
+    strategy: Literal["single", "cascade"] = "cascade"
+    escalate_threshold: float = 0.45
+    max_escalations: int = 2
+    thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    #: Print the routing decision for every call.
+    explain: bool = False
+
+    @field_validator("escalate_threshold")
+    @classmethod
+    def _in_unit_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("router.escalate_threshold must be between 0 and 1")
+        return v
 
 
 class VideoConfig(BaseModel):
@@ -90,8 +151,14 @@ class MemoryConfig(BaseModel):
     chunk_lines: int = 80
     chunk_overlap_lines: int = 15
     retrieve_top_k: int = 8
-    dense_rerank: bool = False
-    dense_model: str = "sentence-transformers/all-MiniLM-L6-v2"
+    #: Blend dense embedding similarity with BM25 (needs an `embed` pool member).
+    hybrid_retrieval: bool = True
+    #: Weight of the dense score in the hybrid blend; BM25 takes the remainder.
+    dense_weight: float = 0.5
+    #: Cross-encoder rerank of the merged candidates (needs a `rerank` member).
+    use_reranker: bool = True
+    #: Candidates to retrieve before reranking trims to retrieve_top_k.
+    rerank_candidates: int = 30
 
     @field_validator("chunk_overlap_lines")
     @classmethod
@@ -104,6 +171,13 @@ class MemoryConfig(BaseModel):
             )
         return v
 
+    @field_validator("dense_weight")
+    @classmethod
+    def _weight_in_range(cls, v: float) -> float:
+        if not 0.0 <= v <= 1.0:
+            raise ValueError("memory.dense_weight must be between 0 and 1")
+        return v
+
 
 class UIConfig(BaseModel):
     show_thinking: bool = False
@@ -112,13 +186,60 @@ class UIConfig(BaseModel):
 
 
 class Config(BaseModel):
-    model: ModelConfig = Field(default_factory=ModelConfig)
-    backend: BackendConfig = Field(default_factory=BackendConfig)
+    generation: GenerationConfig = Field(default_factory=GenerationConfig)
+    models: dict[str, ModelSpec] = Field(default_factory=dict)
+    runtime: RuntimeConfig = Field(default_factory=RuntimeConfig)
+    router: RouterConfig = Field(default_factory=RouterConfig)
     media: MediaConfig = Field(default_factory=MediaConfig)
     agent: AgentConfig = Field(default_factory=AgentConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
+
+    @model_validator(mode="after")
+    def _needs_a_generation_model(self) -> "Config":
+        if not self.enabled_models(task="generate"):
+            raise ValueError(
+                "at least one enabled model with task 'generate' is required; "
+                "check the `models:` section of your config"
+            )
+        return self
+
+    # ---- pool access ----------------------------------------------------------
+
+    def enabled_models(self, *, task: ModelTask | None = None) -> dict[str, ModelSpec]:
+        return {
+            key: spec
+            for key, spec in self.models.items()
+            if spec.enabled and (task is None or spec.task == task)
+        }
+
+    def first_model(self, task: ModelTask) -> tuple[str, ModelSpec] | None:
+        """The lowest-tier enabled model for a task, if any."""
+        candidates = sorted(self.enabled_models(task=task).items(), key=lambda i: i[1].tier)
+        return candidates[0] if candidates else None
+
+    def strongest_model(self) -> tuple[str, ModelSpec]:
+        candidates = sorted(
+            self.enabled_models(task="generate").items(), key=lambda i: i[1].tier
+        )
+        return candidates[-1]
+
+    def serving_params(self, spec: ModelSpec) -> dict[str, Any]:
+        """Merge a spec's serving fields over the shared runtime defaults."""
+        return {
+            "max_model_len": spec.max_model_len or self.runtime.max_model_len,
+            "gpu_memory_utilization": (
+                spec.gpu_memory_utilization
+                if spec.gpu_memory_utilization is not None
+                else self.runtime.gpu_memory_utilization
+            ),
+            "tensor_parallel_size": (
+                spec.tensor_parallel_size or self.runtime.tensor_parallel_size
+            ),
+            "quantization": spec.quantization or self.runtime.quantization,
+            "extra_args": list(self.runtime.extra_args) + list(spec.extra_args),
+        }
 
     def workspace_path(self) -> Path:
         return Path(self.tools.workspace_root).expanduser().resolve()

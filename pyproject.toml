@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newal"
-version = "0.1.0"
-description = "Local multimodal coding assistant powered by Qwen (text + image + video)"
+version = "1.0.0"
+description = "Local multimodal coding assistant powered by a pool of Qwen models (text + image + video)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

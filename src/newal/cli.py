@@ -16,10 +16,11 @@ from rich.table import Table
 
 from . import __version__
 from .agent import Agent, Toolbox, describe_command
-from .backends import BackendError, build_backend
+from .backends import BackendError
 from .config import Config, load_config
 from .media import Attachment, AttachmentError, prepare_attachments
 from .memory import RepoIndex, build_index
+from .models import ModelPool
 
 app = typer.Typer(add_completion=False, help="newal -- local multimodal coding assistant")
 console = Console()
@@ -31,6 +32,7 @@ HELP_TEXT = """\
   /files                show what is currently attached
   /clear                drop pending attachments
   /index                re-index the workspace
+  /models               show the model pool and per-model token usage
   /notes                show what the assistant remembers about this project
   /reset                start a fresh conversation (memory is kept)
   /usage                show token usage for this session
@@ -52,6 +54,7 @@ def _configure_logging(verbose: bool) -> None:
 def _make_event_printer(config: Config):
     styles = {
         "phase": "bold cyan",
+        "route": "blue",
         "thinking": "dim italic",
         "tool_call": "yellow",
         "tool_result": "dim",
@@ -65,7 +68,8 @@ def _make_event_printer(config: Config):
             return
         if kind == "thinking" and not config.ui.show_thinking:
             return
-        prefix = {"tool_call": "→", "tool_result": "  ", "warning": "!"}.get(kind, "·")
+        prefix = {"tool_call": "→", "tool_result": "  ", "warning": "!",
+                  "route": "⇢"}.get(kind, "·")
         console.print(f"[{styles.get(kind, 'dim')}]{prefix} {text}[/]")
 
     return emit
@@ -89,27 +93,34 @@ def _make_approver() -> Any:
     return approve
 
 
-def _build_session(config: Config, *, autostart: bool) -> tuple[Agent, RepoIndex | None]:
+def _build_session(
+    config: Config, *, autostart: bool
+) -> tuple[Agent, ModelPool, RepoIndex | None]:
     root = config.workspace_path()
+
+    config.runtime.autostart = autostart
+    with console.status("[cyan]starting model pool..."):
+        pool = ModelPool(config, on_progress=lambda msg: console.print(f"[dim]{msg}[/]"))
+    for line in pool.describe():
+        console.print(f"[dim]  {line}[/]")
 
     index: RepoIndex | None = None
     if config.memory.enabled:
         index = build_index(root, config.memory)
+        # Retrieval models come from the pool, so attach before the first pass.
+        index.attach_models(embedder=pool.embedder, reranker=pool.reranker)
         with console.status("[cyan]indexing workspace..."):
             stats = index.refresh()
+        detail = f"{stats.chunks_embedded} embedded, " if stats.chunks_embedded else ""
         console.print(
             f"[dim]indexed {stats.files_indexed} file(s), "
-            f"{index.store.chunk_count()} chunks "
-            f"({stats.files_skipped} unchanged)[/]"
+            f"{index.store.chunk_count()} chunks, {detail}"
+            f"{stats.files_skipped} unchanged[/]"
         )
 
-    config.backend.autostart = autostart
-    with console.status(f"[cyan]connecting to {config.model.id}..."):
-        backend = build_backend(config)
-
     toolbox = Toolbox(config.tools, index=index, approve=_make_approver())
-    agent = Agent(config, backend, toolbox, index=index, on_event=_make_event_printer(config))
-    return agent, index
+    agent = Agent(config, pool, toolbox, index=index, on_event=_make_event_printer(config))
+    return agent, pool, index
 
 
 def _resolve_attachment_paths(raw: str) -> list[str]:
@@ -180,6 +191,18 @@ def _handle_command(
         pending.clear()
         console.print("[dim]conversation reset[/]")
 
+    elif command == "/models":
+        table = Table("model", "prompt", "completion", "total", box=None)
+        for line in agent.pool.describe():
+            console.print(f"[dim]{line}[/]")
+        for key, usage in sorted(agent.usage_by_model.items()):
+            table.add_row(
+                key, f"{usage.prompt_tokens:,}",
+                f"{usage.completion_tokens:,}", f"{usage.total_tokens:,}"
+            )
+        if agent.usage_by_model:
+            console.print(table)
+
     elif command == "/usage":
         usage = agent.usage
         console.print(
@@ -187,6 +210,8 @@ def _handle_command(
             f"completion: {usage.completion_tokens:,}  "
             f"total: {usage.total_tokens:,}"
         )
+        for key, per in sorted(agent.usage_by_model.items()):
+            console.print(f"[dim]  {key}: {per.total_tokens:,}[/]")
 
     else:
         console.print(f"[red]unknown command {command}[/] -- try /help")
@@ -225,13 +250,20 @@ def chat(
     if workspace:
         overrides["tools"] = {"workspace_root": str(workspace)}
     if model:
-        overrides["model"] = {"id": model}
+        # --model overrides the strongest tier, which is what "the model" means
+        # to someone who has not opened the pool config.
+        base = load_config(config_path, overrides=overrides, use_env=True)
+        key, _ = base.strongest_model()
+        overrides["models"] = {key: {"id": model}}
     config = load_config(config_path, overrides=overrides)
 
+    strongest_key, strongest = config.strongest_model()
     console.print(
         Panel(
             f"[bold]newal[/] v{__version__}\n"
-            f"model: [cyan]{config.model.id}[/]\n"
+            f"pool: [cyan]{len(config.enabled_models())} model(s)[/], "
+            f"routing: [cyan]{config.router.strategy}[/]\n"
+            f"primary: [cyan]{strongest.id}[/] ({strongest_key})\n"
             f"workspace: [cyan]{config.workspace_path()}[/]\n"
             f"[dim]/help for commands[/]",
             border_style="cyan",
@@ -239,8 +271,8 @@ def chat(
     )
 
     try:
-        agent, index = _build_session(config, autostart=not no_autostart)
-    except (BackendError, RuntimeError) as exc:
+        agent, pool, index = _build_session(config, autostart=not no_autostart)
+    except (BackendError, RuntimeError, ValueError) as exc:
         console.print(f"[bold red]startup failed:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
@@ -271,6 +303,8 @@ def chat(
                 console.print(f"[bold red]backend error:[/] {exc}")
                 continue
 
+            if result.escalations:
+                console.print(f"[dim]escalated {result.escalations}x[/]")
             if result.files_written:
                 console.print(f"[dim]changed: {', '.join(result.files_written)}[/]")
             if result.verification and not result.verification.skipped:
@@ -280,7 +314,7 @@ def chat(
                 console.print(f"[dim]{result.usage.total_tokens:,} tokens · "
                               f"{result.steps} step(s)[/]")
     finally:
-        agent.backend.close()
+        pool.close()
         console.print("[dim]bye[/]")
 
 
@@ -293,25 +327,20 @@ def serve(
     _configure_logging(True if verbose else False)
     config = load_config(config_path)
 
-    from .backends.launcher import ensure_server
-
-    console.print(f"[cyan]starting {config.backend.engine} for {config.model.id}...[/]")
-    server = ensure_server(config.model, config.backend, log_path=".newal/server.log")
-    if server is None:
-        console.print(f"[yellow]a server is already running at {config.backend.base_url}[/]")
-        return
-
-    console.print(f"[green]ready[/] at {config.backend.base_url} (pid {server.pid})")
+    console.print(f"[cyan]starting {len(config.enabled_models())} server(s)...[/]")
+    pool = ModelPool(config, on_progress=lambda msg: console.print(f"[dim]{msg}[/]"))
+    for line in pool.describe():
+        console.print(f"[green]ready[/] {line}")
     console.print("[dim]Ctrl-C to stop[/]")
     try:
-        while server.is_running():
-            import time
+        import time
 
+        while True:
             time.sleep(1.0)
     except KeyboardInterrupt:
         pass
     finally:
-        server.stop()
+        pool.close()
 
 
 @app.command()

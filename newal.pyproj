@@ -45,10 +45,21 @@
     <Compile Include="src\newal\agent\tools.py" />
     <Compile Include="src\newal\agent\verifier.py" />
     <Compile Include="src\newal\memory\__init__.py" />
+    <Compile Include="src\newal\memory\fusion.py" />
+    <Compile Include="src\newal\models\__init__.py" />
+    <Compile Include="src\newal\models\pool.py" />
+    <Compile Include="src\newal\models\retrieval.py" />
+    <Compile Include="src\newal\models\roles.py" />
+    <Compile Include="src\newal\models\router.py" />
     <Compile Include="src\newal\memory\bm25.py" />
     <Compile Include="src\newal\memory\indexer.py" />
     <Compile Include="src\newal\memory\store.py" />
     <Compile Include="tests\test_bm25.py" />
+    <Compile Include="tests\test_config.py" />
+    <Compile Include="tests\test_fusion.py" />
+    <Compile Include="tests\test_launcher.py" />
+    <Compile Include="tests\test_retrieval.py" />
+    <Compile Include="tests\test_router.py" />
     <Compile Include="tests\test_budget.py" />
     <Compile Include="tests\test_tools.py" />
     <Compile Include="tests\test_video.py" />
@@ -60,6 +71,7 @@
     <Folder Include="src\newal\backends\" />
     <Folder Include="src\newal\media\" />
     <Folder Include="src\newal\memory\" />
+    <Folder Include="src\newal\models\" />
     <Folder Include="configs\" />
     <Folder Include="tests\" />
   </ItemGroup>

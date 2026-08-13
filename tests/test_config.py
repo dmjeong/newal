@@ -34,13 +34,81 @@ def test_env_overrides_are_nested_and_typed():
 
 def test_defaults_load_from_the_shipped_config():
     config = load_config(use_env=False)
-    assert config.model.id.startswith("Qwen/")
-    assert config.backend.kind == "openai_compat"
+    key, spec = config.strongest_model()
+    assert spec.id.startswith("Qwen/")
+    assert config.runtime.kind == "openai_compat"
+    assert key in config.models
+
+
+def test_only_one_model_is_enabled_by_default():
+    """A fresh install must fit on one GPU, so extra pool members ship off."""
+    config = load_config(use_env=False)
+    assert len(config.enabled_models()) == 1
+    assert config.enabled_models(task="generate")
 
 
 def test_overrides_win_over_file_values():
-    config = load_config(use_env=False, overrides={"model": {"id": "custom/model"}})
-    assert config.model.id == "custom/model"
+    config = load_config(
+        use_env=False, overrides={"models": {"heavy": {"id": "custom/model"}}}
+    )
+    assert config.models["heavy"].id == "custom/model"
+
+
+def test_config_rejects_a_pool_with_no_generation_model():
+    with pytest.raises(ValueError, match="task 'generate'"):
+        Config.model_validate(
+            {
+                "models": {
+                    "embedding": {
+                        "id": "Qwen/Qwen3-Embedding-0.6B",
+                        "base_url": "http://127.0.0.1:8002/v1",
+                        "task": "embed",
+                    }
+                }
+            }
+        )
+
+
+def test_disabled_models_are_not_in_the_pool():
+    config = load_config(
+        use_env=False, overrides={"models": {"light": {"enabled": True}}}
+    )
+    assert "light" in config.enabled_models()
+    assert "embedding" not in config.enabled_models()
+
+
+def test_strongest_model_is_the_highest_tier():
+    config = load_config(
+        use_env=False, overrides={"models": {"light": {"enabled": True}}}
+    )
+    key, spec = config.strongest_model()
+    assert key == "heavy"
+    assert spec.tier > config.models["light"].tier
+
+
+def test_serving_params_inherit_from_runtime_and_can_be_overridden():
+    config = load_config(
+        use_env=False,
+        overrides={
+            "runtime": {"max_model_len": 40000, "gpu_memory_utilization": 0.8},
+            "models": {"heavy": {"max_model_len": 16384}},
+        },
+    )
+    params = config.serving_params(config.models["heavy"])
+    assert params["max_model_len"] == 16384          # spec wins
+    assert params["gpu_memory_utilization"] == 0.8   # inherited
+
+
+def test_thresholds_must_be_probabilities():
+    with pytest.raises(ValueError):
+        Config.model_validate(
+            {
+                "models": {
+                    "m": {"id": "x", "base_url": "http://localhost:8000/v1"}
+                },
+                "router": {"escalate_threshold": 1.7},
+            }
+        )
 
 
 def test_missing_config_file_raises():

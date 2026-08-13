@@ -40,6 +40,8 @@ class Completion:
     tool_calls: list[ToolCall] = field(default_factory=list)
     finish_reason: str = "stop"
     usage: Usage = field(default_factory=Usage)
+    #: Which pool member produced this, for attribution in the transcript.
+    model_key: str = ""
 
     @property
     def wants_tools(self) -> bool:
