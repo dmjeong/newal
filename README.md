@@ -4,7 +4,7 @@
 
 Python · Visual Studio 2026 · 완전 오프라인 · 사용량 제한 없음 · 무료.
 
-**v1.0** — 단일 모델에서 **이종(heterogeneous) 모델 풀 + 라우터** 구조로 전환.
+**v2.0** — 정규식 휴리스틱에서 **학습된 자동 모델 선택**으로 전환. GPT/Claude처럼 질문을 보고 알아서 고릅니다.
 
 ---
 
@@ -87,7 +87,7 @@ VRAM 여유를 보고 하나씩 켜세요. 멤버마다 별도 서버 프로세�
 
 ### 켜는 순서 추천 (효과 대비 VRAM)
 
-1. **`embedding`** (~1GB) — 검색 품질이 가장 크게 오릅니다. 상관관계 낮은 진짜 이득.
+1. **`embedding`** (~1GB) — 검색 품질 + **semantic 라우팅**. 켜기 전엔 `auto`가 llm 단계로만 동작합니다.
 2. **`reranker`** (~1GB) — 검색 정밀도 추가 상승.
 3. **`speculative_draft`** (~1GB) — 속도만. 품질 변화 없음.
 4. **`light`** (~3GB) — 지연시간/VRAM 최적화. **정확도는 안 오릅니다.**
@@ -108,50 +108,92 @@ VRAM 여유를 보고 하나씩 켜세요. 멤버마다 별도 서버 프로세�
 
 ---
 
-## 라우팅: 호출마다 두 가지를 결정
+## 라우팅: 질문 보고 알아서 고릅니다
 
-매 호출 전에 난이도 점수(0~1)를 계산해 **어느 티어로 보낼지**와 **thinking을 켤지**를 정합니다.
-[캐스케이드 라우팅](https://arxiv.org/pdf/2606.27457) 및
-[inhibitory deliberation](https://arxiv.org/pdf/2606.06745) 계열 접근입니다.
+매 호출 전에 **어느 모델로 보낼지**와 **thinking을 켤지**를 정합니다.
+[캐스케이드 라우팅](https://arxiv.org/pdf/2606.27457),
+[inhibitory deliberation](https://arxiv.org/pdf/2606.06745) 계열입니다.
 
-점수는 학습된 라우터가 아니라 **투명한 휴리스틱**입니다 — 검사 가능하고, 결정적이고,
-추가 지연이 없고, 사용자가 갖고 있지 않은 학습 데이터를 요구하지 않습니다.
+핵심 아이디어: **결정 자체도 캐스케이드합니다.** 대부분의 질문은 명백히 쉽거나 명백히 어렵습니다.
+그런 건 공짜 휴리스틱으로 끝냅니다. 애매한 소수만 진짜 분류기를 씁니다.
+
+```
+1. 휴리스틱     난이도 점수 계산. 0원, 0ms, 결정적
+      │
+      │ 점수가 임계값 ±0.12 밖 → 여기서 끝 (대부분의 질문)
+      │ 점수가 애매한 구간 안 → 아래로
+      ▼
+2. semantic     쿼리 임베딩 → 라벨된 예시와 kNN 투표. ~20ms
+      │
+      │ 확신 부족(<0.3) → 아래로
+      ▼
+3. llm          싼 모델에게 한 단어로 물어봄. 짧은 호출 1회
+```
+
+`router.mode`로 고를 수 있습니다: `heuristic` / `semantic` / `llm` / **`auto`(기본, 위 3단)**.
+`uncertainty_band: 0` 으로 두면 분류기를 완전히 끕니다.
+
+### 왜 휴리스틱을 안 버렸나
+
+정규식은 제가 적어둔 표현만 압니다. 확장이 안 됩니다 — 맞는 지적이었습니다.
+하지만 **버리는 대신 1차 필터로 남겼습니다.** "오타 고쳐줘"에 임베딩 호출을 태울 이유가 없습니다.
+분류기는 휴리스틱이 스스로 자신 없는 구간에서만 돕니다.
+
+난이도 점수:
 
 ```
 역할 기준점        triage 0.00 · edit 0.20 · vision 0.50 · code 0.55 · plan 0.75 · repair 0.90
 + 실행 증거        검증 실패 +0.40 · 에스컬레이션 +0.15/회 · 도구 오류 +0.07/건
-+ 요청 형태        조사형 표현 +0.20 · 기계적 표현 −0.20 · 긴 요청 +0.08~0.15
++ 요청 형태        조사형 +0.20 · 기계적 −0.20 · 긴 요청 +0.08~0.15
 + 첨부             동영상 +0.15 · 이미지 +0.10 · 다중 파일 +0.12
 ```
 
 실행 증거가 요청 형태보다 가중치가 큽니다. 추측이 아니라 관측이기 때문입니다.
+`plan`과 `repair`는 점수와 무관하게 **절대 싼 티어로 안 갑니다.**
 
-한국어 표현도 인식합니다 (한국어 동사 활용까지 — `바꾸`/`바꿔`/`변경` 모두 매칭):
+### 내 저장소에서 배웁니다 ★
 
-```
-변수 이름 바꿔줘      → light, thinking off, 0.35
-오타 고쳐줘           → light, thinking off, 0.35
-이 버그 원인이 뭐야?   → heavy, thinking on,  0.75
-아키텍처 다시 설계하자 → heavy, thinking on,  0.75
-```
+여기가 GPT/Claude 라우터가 못 하는 부분입니다. 매 턴이 끝나면 **실제로 무슨 일이 있었는지**를
+라벨로 저장합니다:
 
-`plan`과 `repair`는 점수와 무관하게 **절대 싼 티어로 안 갑니다.** 잘못된 계획과 잘못된 수리는
-아낀 토큰보다 비쌉니다.
+| 처음 보낸 곳 | 결과 | 배우는 것 |
+|---|---|---|
+| 싼 모델 | 에스컬레이션 or 테스트 실패 | → `strong` (강한 모델이 필요했다) |
+| 싼 모델 | 깔끔하게 끝남 | → `cheap` (싼 걸로 충분했다) |
+| 강한 모델 | 깔끔하게 끝남 | **라벨 안 함** |
+
+마지막 줄이 중요합니다. 강한 모델이 잘 끝냈다고 해서 *싼 모델로도 됐을지*는 알 수 없습니다.
+여기서 `strong`을 기록하면 예시 집합이 시간이 갈수록 `strong` 쪽으로 편향됩니다. 그래서
+**정보가 실제로 있는 결과만** 기록합니다.
+
+라벨의 출처가 **내 저장소에서 코드를 실제로 실행한 결과**라는 게 핵심입니다. 호스팅 라우터는
+내 코드베이스에서 어떤 요청이 어려운지 알 수가 없습니다.
+
+실측: "이 함수 동작이 이상한데 좀 봐줘"가 한 번 실패하고 나면, 다음에 "이 함수 동작이 좀 이상해"가
+`strong`(확신 0.61)으로 분류됩니다. 처음엔 아무 마커도 없어서 휴리스틱이 못 잡던 표현입니다.
+
+`/routing` 으로 현재 설정과 학습된 내역을 볼 수 있습니다.
 
 ### 실제 동작 예시
 
 ```
 $ 변수 이름 바꿔줘
-⇢ light (code, direct, score=0.35)      # 기계적 요청 → 싼 티어
-⇢ light (code, direct, score=0.35)
+⇢ light (code, direct, score=0.35)      # 기계적 → 싼 티어 (휴리스틱만, 분류기 안 씀)
 ⇢ heavy (code, thinking, score=0.60)    # 도구 오류 → 에스컬레이션
-· verifying
-· verify: failed (repair attempt 1)     # 테스트 실패 → 실행 증거
-⇢ heavy (repair, thinking, score=0.80)  # repair 역할, 최상위 티어 고정
-· verify: passed after 1 repair attempt(s)
+· verify: failed (repair attempt 1)     # 테스트 실패 = 실행 증거
+⇢ heavy (repair, thinking, score=0.80)  # repair는 최상위 고정
+· verify: passed
 
 heavy: 74 tok / light: 30 tok / escalated 1x
+learned: strong <- '변수 이름 바꿔줘'    ← 다음엔 처음부터 heavy로
 ```
+
+### 분류기가 틀릴 때의 안전장치
+
+- 확신이 `min_classifier_confidence`(0.3) 미만이면 **무시하고 휴리스틱을 씁니다**
+- 예시 중 닮은 게 하나도 없으면 **기권**합니다 (0점짜리 라벨을 지어내지 않음)
+- 임베딩/분류 모델이 죽어도 **휴리스틱으로 조용히 내려앉습니다**
+- 어떤 경우에도 라우팅 실패가 세션을 죽이지 않습니다
 
 ---
 
@@ -222,7 +264,8 @@ python -m newal chat
 | `/img PATH...` / `/vid PATH...` | 이미지 / 동영상 첨부 |
 | `/files` `/clear` | 첨부 목록 / 해제 |
 | `/index` | 워크스페이스 재색인 |
-| `/models` | **모델 풀 + 모델별 토큰 사용량** |
+| `/models` | 모델 풀 + 모델별 토큰 사용량 |
+| `/routing` | **라우팅 설정 + 학습된 내역** |
 | `/notes` | 기억 중인 프로젝트 지식 |
 | `/reset` `/usage` `/help` `/exit` | — |
 
@@ -266,6 +309,8 @@ $env:NEWAL_ROUTER__STRATEGY = "single"
 | `agent.verify_command` | 테스트 명령 명시 (미지정 시 자동 탐지) |
 | `models.embedding.enabled` | 검색 품질. 상관관계 낮은 진짜 이득 |
 | `models.reranker.enabled` | 검색 정밀도 추가 상승 |
+| `router.mode: auto` | 애매한 질문에서 학습된 분류기가 판단 |
+| `router.learn_from_outcomes` | 실행 결과로 라우팅이 계속 좋아짐 |
 | `router.strategy: cascade` | 지연시간 절감 (정확도는 아님) |
 | `router.explain: true` | 라우팅 결정과 근거를 매 호출 출력 |
 | `router.thinking.mode: adaptive` | 쉬운 작업에서 thinking 토큰 절약 |
@@ -298,7 +343,7 @@ media:
 ## 개발
 
 ```powershell
-python -m pytest -q          # 126개 테스트
+python -m pytest -q          # 158개 테스트
 python -m newal index        # 저장소 색인만
 ```
 
@@ -306,7 +351,7 @@ python -m newal index        # 저장소 색인만
 src/newal/
 ├─ config.py          설정 로딩 (YAML 레이어 + 환경변수)
 ├─ cli.py             대화형 터미널
-├─ models/            ★ 모델 풀 · 라우터 · 역할 · 임베딩/재정렬 클라이언트
+├─ models/            ★ 모델 풀 · 라우터 · 분류기 · 역할 · 임베딩/재정렬
 ├─ backends/          vLLM/SGLang 클라이언트 · 서버 기동 · transformers 폴백
 ├─ media/             이미지/동영상 → 콘텐츠 파트, 시각 토큰 예산
 ├─ memory/            SQLite · BM25 · RRF 융합 · 증분 색인
@@ -317,7 +362,8 @@ src/newal/
 
 ### 버전 정책
 
-- **1.0** — 이종 모델 풀 + 라우터 (현재)
+- **2.0** — 학습된 자동 모델 선택 (현재)
+- **1.0** — 이종 모델 풀 + 휴리스틱 라우터
 - **0.1** — 단일 모델 + 검증 루프
 
 기능/모델 업데이트는 major, 버그 수정은 minor로 올립니다.
@@ -331,6 +377,7 @@ src/newal/
 - [UCCI: Calibrated Uncertainty for Cost-Optimal Cascade Routing](https://arxiv.org/pdf/2605.18796)
 - [When to Think Deeply: Inhibitory Deliberation](https://arxiv.org/pdf/2606.06745) — 적응형 thinking
 - [Qwen3 Embedding & Reranker](https://qwenlm.github.io/blog/qwen3-embedding/)
+- RouteLLM / RouterDC / MixLLM — 학습된 쿼리 라우팅 계열
 
 ## 라이선스
 

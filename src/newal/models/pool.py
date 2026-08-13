@@ -8,6 +8,13 @@ from typing import Callable
 from ..backends import Backend, BackendError, build_backend
 from ..backends.launcher import ServerProcess, ensure_server, is_server_up
 from ..config import Config, ModelSpec
+from .classifier import (
+    SEED_EXEMPLARS,
+    Classifier,
+    LayeredClassifier,
+    LLMClassifier,
+    SemanticClassifier,
+)
 from .retrieval import EmbeddingClient, RerankClient
 from .roles import Role
 from .router import Route, Router
@@ -60,7 +67,60 @@ class ModelPool:
             escalate_threshold=self.config.router.escalate_threshold,
             thinking_mode=self.config.router.thinking.mode,
             thinking_threshold=self.config.router.thinking.threshold,
+            uncertainty_band=self.config.router.uncertainty_band,
         )
+
+    def build_classifier(
+        self, learned_exemplars: list[tuple[str, str]] | None = None
+    ) -> object | None:
+        """Assemble the query classifier the router consults when unsure.
+
+        Called after the memory store is open, so outcomes observed on this
+        repository can be folded in as exemplars alongside the seed set.
+        Returns ``None`` when nothing usable is available, in which case the
+        router keeps its heuristic.
+        """
+        settings = self.config.router
+        if settings.mode == "heuristic" or settings.uncertainty_band <= 0.0:
+            return None
+
+        layers: list[Classifier] = []
+
+        if settings.mode in ("semantic", "auto") and self.embedder is not None:
+            exemplars = list(SEED_EXEMPLARS)
+            if settings.learn_from_outcomes and learned_exemplars:
+                exemplars += learned_exemplars[: settings.max_learned_exemplars]
+            semantic = SemanticClassifier(
+                self.embedder,
+                exemplars=exemplars,
+                neighbours=settings.semantic_neighbours,
+            )
+            if semantic.size:
+                layers.append(semantic)
+            else:
+                log.warning("semantic routing requested but exemplars did not embed")
+
+        if settings.mode in ("llm", "auto"):
+            # The cheapest tier judges; spending the strong model on a one-word
+            # classification would cost more than the routing decision saves.
+            try:
+                layers.append(LLMClassifier(self.backend(self.router.cheapest)))
+            except BackendError as exc:
+                log.warning("llm routing unavailable: %s", exc)
+
+        if not layers:
+            if settings.mode in ("semantic", "llm"):
+                self._notify(
+                    f"router.mode={settings.mode} requested but no classifier could be "
+                    "built; falling back to the heuristic"
+                )
+            return None
+
+        classifier = LayeredClassifier(
+            layers, min_confidence=settings.min_classifier_confidence
+        )
+        self.router.classifier = classifier
+        return classifier
 
     # ---- access ---------------------------------------------------------------
 

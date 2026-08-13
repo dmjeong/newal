@@ -17,7 +17,7 @@ from ..backends.base import Completion, ToolCall, Usage
 from ..config import Config
 from ..media import Attachment
 from ..memory import RepoIndex
-from ..models import ModelPool, Role, Route, RouteSignals
+from ..models import ModelPool, Role, Route, RouteSignals, label_from_outcome
 from .prompts import PLAN_PROMPT, VERIFY_PROMPT, VIDEO_HINT, build_system_prompt, load_project_doc
 from .tools import Toolbox, ToolResult
 from .verifier import VerificationResult, run_verification
@@ -83,6 +83,9 @@ class Agent:
         self._verification_failed = False
         self._escalations = 0
         self._routes: list[str] = []
+        # The tier the turn actually started on, which is what the outcome
+        # label is about -- later escalations are the outcome, not the choice.
+        self._first_route: Route | None = None
 
     def _system_prompt(self) -> str:
         notes: list[str] = []
@@ -125,6 +128,8 @@ class Agent:
             route = self.pool.router.route(role, self._signals(attempt=attempt))
 
         self._routes.append(route.describe())
+        if self._first_route is None:
+            self._first_route = route
         if self.config.router.explain:
             self._emit("route", f"{route.describe()} :: {'; '.join(route.reasons)}")
 
@@ -152,6 +157,7 @@ class Agent:
         self._verification_failed = False
         self._escalations = 0
         self._routes = []
+        self._first_route = None
 
         self.messages.append(self._user_message(user_text, attachments))
         self.toolbox.files_written.clear()
@@ -171,7 +177,44 @@ class Agent:
         result.usage_by_model = dict(self.usage_by_model)
         result.routes = list(self._routes)
         result.escalations = self._escalations
+
+        self._record_routing_outcome(user_text, result)
         return result
+
+    def _record_routing_outcome(self, prompt: str, result: AgentResult) -> None:
+        """Turn what happened into a labelled exemplar for future routing.
+
+        This is the part a hosted router cannot do: the label comes from
+        execution on *this* repository, so over time the classifier learns which
+        requests here actually need the strong model.
+        """
+        if self.index is None or not self.config.router.learn_from_outcomes:
+            return
+        if self._first_route is None or not prompt.strip():
+            return
+
+        verify_ok: bool | None = None
+        if result.verification is not None and not result.verification.skipped:
+            verify_ok = result.verification.passed
+
+        label = label_from_outcome(
+            routed_to_strong=self._first_route.model_key == self.pool.router.strongest,
+            escalated=result.escalations > 0,
+            verification_failed=verify_ok is False,
+        )
+        if label is None:
+            return
+
+        try:
+            self.index.store.record_route_outcome(
+                prompt,
+                label,
+                model_key=self._first_route.model_key,
+                escalated=result.escalations > 0,
+                verify_ok=verify_ok,
+            )
+        except Exception as exc:  # noqa: BLE001 - learning is never load-bearing
+            log.warning("could not record routing outcome: %s", exc)
 
     # ---- phases ---------------------------------------------------------------
 

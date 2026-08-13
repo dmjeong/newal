@@ -19,13 +19,33 @@ that "more models is better":
 
 from __future__ import annotations
 
+from .classifier import (
+    CHEAP,
+    SEED_EXEMPLARS,
+    STRONG,
+    Classifier,
+    LayeredClassifier,
+    LLMClassifier,
+    SemanticClassifier,
+    Verdict,
+    label_from_outcome,
+)
 from .pool import ModelPool
 from .retrieval import EmbeddingClient, RerankClient, RetrievalError, cosine_similarity
 from .roles import HEAVY_ONLY_ROLES, ROLE_DIFFICULTY, Role
 from .router import Route, Router, RouteSignals, difficulty_score
 
 __all__ = [
+    "CHEAP",
     "HEAVY_ONLY_ROLES",
+    "LLMClassifier",
+    "LayeredClassifier",
+    "SEED_EXEMPLARS",
+    "STRONG",
+    "SemanticClassifier",
+    "Classifier",
+    "Verdict",
+    "label_from_outcome",
     "ROLE_DIFFICULTY",
     "EmbeddingClient",
     "ModelPool",

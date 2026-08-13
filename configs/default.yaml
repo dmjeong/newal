@@ -73,8 +73,30 @@ router:
   # cascade -> route by difficulty and escalate on failure
   # single  -> always use the strongest model (what v0.1 did)
   strategy: "cascade"
+
+  # How the tier is chosen. A heuristic decides on its own unless the score
+  # lands near the threshold; only those borderline queries pay for a real
+  # classifier, so obvious work stays free.
+  #   heuristic -> patterns and signals only (free, deterministic, v1.0)
+  #   semantic  -> nearest labelled exemplars via embeddings (~20ms)
+  #   llm       -> ask the cheapest model (one short call)
+  #   auto      -> heuristic, then semantic, then llm while still unsure
+  mode: "auto"
   # Difficulty score at or above which a call goes straight to the top tier.
   escalate_threshold: 0.45
+  # Half-width of the band around the threshold where a classifier is consulted.
+  # 0 disables classifiers entirely, whatever `mode` says.
+  uncertainty_band: 0.12
+  # Verdicts below this confidence are ignored and the heuristic stands.
+  min_classifier_confidence: 0.3
+  semantic_neighbours: 5
+
+  # Record what actually happened (did it escalate? did tests pass?) and reuse
+  # it as training data. This is the part a hosted router cannot do: the labels
+  # come from execution on YOUR repository.
+  learn_from_outcomes: true
+  max_learned_exemplars: 200
+
   # Escalation rounds allowed per step after a tool or verification failure.
   max_escalations: 2
   thinking:

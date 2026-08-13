@@ -12,15 +12,19 @@ more models and voting.
 mechanical work. Following the inhibitory-deliberation idea (arXiv:2606.06745),
 a switch score decides per call rather than once in config.
 
-The scoring is deliberately a transparent heuristic rather than a learned
-router: it is inspectable, deterministic, adds no latency, and needs no
-training data the user does not have.
+Scoring starts as a transparent heuristic -- inspectable, deterministic, no
+latency -- but a heuristic only knows the phrasings someone wrote down. So when
+the score lands near the threshold, where that weakness actually costs
+something, the decision itself escalates to a learned classifier
+(:mod:`newal.models.classifier`). Clear-cut queries stay free; ambiguous ones
+buy a better answer.
 """
 
 from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
+from typing import Any
 
 from .roles import HEAVY_ONLY_ROLES, ROLE_DIFFICULTY, Role
 
@@ -142,10 +146,16 @@ class Router:
         escalate_threshold: float = 0.45,
         thinking_mode: str = "adaptive",
         thinking_threshold: float = 0.55,
+        classifier: Any | None = None,
+        uncertainty_band: float = 0.12,
     ) -> None:
         """
         ``tiers`` is ``[(model_key, tier)]`` for every generation-capable member,
         which the router sorts from cheapest to strongest.
+
+        ``classifier`` is consulted only when the heuristic score lands within
+        ``uncertainty_band`` of the threshold -- the cases where the cheap
+        decision procedure is, by its own measure, close to a coin flip.
         """
         if not tiers:
             raise ValueError("router needs at least one generation model")
@@ -154,6 +164,8 @@ class Router:
         self.escalate_threshold = escalate_threshold
         self.thinking_mode = thinking_mode
         self.thinking_threshold = thinking_threshold
+        self.classifier = classifier
+        self.uncertainty_band = max(0.0, uncertainty_band)
 
     @property
     def strongest(self) -> str:
@@ -176,6 +188,29 @@ class Router:
             return False
         return score >= self.thinking_threshold
 
+    def is_uncertain(self, score: float) -> bool:
+        """True when the heuristic score is too close to the threshold to trust."""
+        return abs(score - self.escalate_threshold) <= self.uncertainty_band
+
+    def _consult_classifier(self, prompt: str, reasons: list[str]) -> bool | None:
+        """Ask the classifier whether to go strong. ``None`` means no opinion."""
+        if self.classifier is None or not prompt.strip():
+            return None
+        try:
+            verdict = self.classifier.classify(prompt)
+        except Exception as exc:  # noqa: BLE001 - routing must never hard-fail
+            reasons.append(f"classifier error, kept heuristic ({exc})")
+            return None
+        if verdict is None:
+            reasons.append("classifier had no confident opinion")
+            return None
+
+        reasons.append(
+            f"{verdict.source} classifier says {verdict.label} "
+            f"(confidence {verdict.confidence:.2f})"
+        )
+        return verdict.prefer_strong
+
     def route(self, role: Role, signals: RouteSignals | None = None) -> Route:
         """Pick the model and thinking mode for one call."""
         signals = signals or RouteSignals()
@@ -188,6 +223,12 @@ class Router:
         elif role in HEAVY_ONLY_ROLES:
             model_key = self.strongest
             reasons.append(f"{role} never runs on the cheap tier")
+        elif self.is_uncertain(score) and (
+            (verdict := self._consult_classifier(signals.prompt, reasons)) is not None
+        ):
+            # Borderline by the heuristic's own measure: let a real classifier
+            # break the tie rather than letting a threshold rounding decide.
+            model_key = self.strongest if verdict else self.cheapest
         elif score >= self.escalate_threshold:
             model_key = self.strongest
             reasons.append(f"score >= escalate_threshold ({self.escalate_threshold:.2f})")

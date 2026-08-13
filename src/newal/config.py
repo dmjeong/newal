@@ -95,17 +95,35 @@ class ThinkingConfig(BaseModel):
 class RouterConfig(BaseModel):
     #: single -> always use the strongest model; cascade -> route by difficulty.
     strategy: Literal["single", "cascade"] = "cascade"
+    #: How the tier is chosen for borderline queries:
+    #:   heuristic -> patterns and signals only (free, deterministic)
+    #:   semantic  -> nearest labelled exemplars via embeddings (needs `embed`)
+    #:   llm       -> ask the cheapest model (one short call)
+    #:   auto      -> heuristic, falling back to semantic then llm when unsure
+    mode: Literal["heuristic", "semantic", "llm", "auto"] = "auto"
     escalate_threshold: float = 0.45
+    #: Consult a classifier only when the score is this close to the threshold.
+    #: 0 disables classifiers entirely, whatever `mode` says.
+    uncertainty_band: float = 0.12
+    #: Verdicts below this confidence are ignored and the heuristic stands.
+    min_classifier_confidence: float = 0.3
+    #: Nearest exemplars the semantic classifier votes over.
+    semantic_neighbours: int = 5
     max_escalations: int = 2
     thinking: ThinkingConfig = Field(default_factory=ThinkingConfig)
+    #: Record outcomes and feed them back as exemplars, so routing adapts to
+    #: this repository over time.
+    learn_from_outcomes: bool = True
+    #: Cap on stored outcomes replayed into the classifier at startup.
+    max_learned_exemplars: int = 200
     #: Print the routing decision for every call.
     explain: bool = False
 
-    @field_validator("escalate_threshold")
+    @field_validator("escalate_threshold", "uncertainty_band", "min_classifier_confidence")
     @classmethod
-    def _in_unit_range(cls, v: float) -> float:
+    def _in_unit_range(cls, v: float, info: Any) -> float:
         if not 0.0 <= v <= 1.0:
-            raise ValueError("router.escalate_threshold must be between 0 and 1")
+            raise ValueError(f"router.{info.field_name} must be between 0 and 1")
         return v
 
 

@@ -33,6 +33,7 @@ HELP_TEXT = """\
   /clear                drop pending attachments
   /index                re-index the workspace
   /models               show the model pool and per-model token usage
+  /routing              show how routing is configured and what it has learned
   /notes                show what the assistant remembers about this project
   /reset                start a fresh conversation (memory is kept)
   /usage                show token usage for this session
@@ -118,6 +119,12 @@ def _build_session(
             f"{stats.files_skipped} unchanged[/]"
         )
 
+    # The classifier needs the store open so past outcomes join the seed set.
+    learned = index.store.routing_exemplars(config.router.max_learned_exemplars) if index else []
+    if pool.build_classifier(learned) is not None:
+        detail = f" (+{len(learned)} learned)" if learned else ""
+        console.print(f"[dim]router: {config.router.mode} mode{detail}[/]")
+
     toolbox = Toolbox(config.tools, index=index, approve=_make_approver())
     agent = Agent(config, pool, toolbox, index=index, on_event=_make_event_printer(config))
     return agent, pool, index
@@ -202,6 +209,25 @@ def _handle_command(
             )
         if agent.usage_by_model:
             console.print(table)
+
+    elif command == "/routing":
+        settings = agent.config.router
+        console.print(
+            f"strategy: {settings.strategy}  mode: {settings.mode}  "
+            f"threshold: {settings.escalate_threshold:.2f} "
+            f"±{settings.uncertainty_band:.2f}"
+        )
+        console.print(
+            f"classifier: "
+            f"{'active' if agent.pool.router.classifier else 'not in use (heuristic only)'}"
+        )
+        if index is not None:
+            counts = index.store.routing_outcome_counts()
+            learned = sum(counts.values())
+            console.print(
+                f"learned from {learned} outcome(s): "
+                + (", ".join(f"{k}={v}" for k, v in sorted(counts.items())) or "none yet")
+            )
 
     elif command == "/usage":
         usage = agent.usage

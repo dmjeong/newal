@@ -47,6 +47,7 @@
     <Compile Include="src\newal\memory\__init__.py" />
     <Compile Include="src\newal\memory\fusion.py" />
     <Compile Include="src\newal\models\__init__.py" />
+    <Compile Include="src\newal\models\classifier.py" />
     <Compile Include="src\newal\models\pool.py" />
     <Compile Include="src\newal\models\retrieval.py" />
     <Compile Include="src\newal\models\roles.py" />
@@ -55,6 +56,7 @@
     <Compile Include="src\newal\memory\indexer.py" />
     <Compile Include="src\newal\memory\store.py" />
     <Compile Include="tests\test_bm25.py" />
+    <Compile Include="tests\test_classifier.py" />
     <Compile Include="tests\test_config.py" />
     <Compile Include="tests\test_fusion.py" />
     <Compile Include="tests\test_launcher.py" />

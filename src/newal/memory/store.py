@@ -21,7 +21,7 @@ log = logging.getLogger(__name__)
 #: Bumped whenever the chunk/file tables change shape. The index is a
 #: rebuildable cache, so a mismatch drops and re-derives it rather than
 #: attempting a migration. Notes are user data and always survive.
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -48,6 +48,19 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_notes_topic ON notes(topic);
+
+-- Observed routing outcomes, used as training exemplars. Like notes, this is
+-- learned data rather than a derived cache, so it survives a schema rebuild.
+CREATE TABLE IF NOT EXISTS route_outcomes (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    prompt      TEXT NOT NULL,
+    label       TEXT NOT NULL,
+    model_key   TEXT NOT NULL,
+    escalated   INTEGER NOT NULL,
+    verify_ok   INTEGER,
+    created_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_route_label ON route_outcomes(label);
 """
 
 
@@ -261,3 +274,53 @@ class MemoryStore:
     def clear_notes(self) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM notes")
+
+    # ---- routing outcomes -----------------------------------------------------
+
+    def record_route_outcome(
+        self,
+        prompt: str,
+        label: str,
+        *,
+        model_key: str,
+        escalated: bool,
+        verify_ok: bool | None,
+    ) -> int:
+        """Store one observed routing outcome as a future training exemplar."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO route_outcomes "
+                "(prompt, label, model_key, escalated, verify_ok, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    prompt.strip()[:2000],
+                    label,
+                    model_key,
+                    int(escalated),
+                    None if verify_ok is None else int(verify_ok),
+                    time.time(),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def routing_exemplars(self, limit: int = 200) -> list[tuple[str, str]]:
+        """Recent (prompt, label) pairs, newest first.
+
+        Recency-ordered rather than balanced: a project's routing needs drift as
+        the codebase does, and the newest evidence describes it best.
+        """
+        rows = self._conn.execute(
+            "SELECT prompt, label FROM route_outcomes ORDER BY created_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [(row["prompt"], row["label"]) for row in rows]
+
+    def routing_outcome_counts(self) -> dict[str, int]:
+        rows = self._conn.execute(
+            "SELECT label, COUNT(*) AS n FROM route_outcomes GROUP BY label"
+        ).fetchall()
+        return {row["label"]: int(row["n"]) for row in rows}
+
+    def clear_route_outcomes(self) -> None:
+        with self._conn:
+            self._conn.execute("DELETE FROM route_outcomes")
