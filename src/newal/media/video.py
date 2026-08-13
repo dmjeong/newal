@@ -10,9 +10,10 @@ walkthroughs rather than just a novelty input.
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any
 
 import numpy as np
 from PIL import Image

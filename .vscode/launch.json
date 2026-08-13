@@ -1,0 +1,101 @@
+{
+  // Run these from the Run and Debug panel (Ctrl+Shift+D), or press F5.
+  // PYTHONPATH is set so the src/ layout imports work even before
+  // `pip install -e .` has been run.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "newal: chat (interactive)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": ["chat"],
+      // integratedTerminal is required: the chat loop reads from stdin.
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: chat (verbose, this folder as workspace)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": ["chat", "--verbose", "--workspace", "${workspaceFolder}"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: chat without starting servers",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": ["chat", "--no-autostart"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: start model servers only",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": ["serve", "--verbose"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: index the workspace",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": ["index"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: run all tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-q"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+    },
+    {
+      "name": "newal: run the open test file",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "args": ["-v", "${file}"],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+    }
+  ]
+}

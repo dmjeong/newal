@@ -16,7 +16,7 @@ from newal.models.classifier import (
     label_from_outcome,
 )
 from newal.models.roles import Role
-from newal.models.router import RouteSignals, Router
+from newal.models.router import Router, RouteSignals
 
 
 class WordEmbedder:

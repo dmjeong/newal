@@ -1,0 +1,12 @@
+{
+  "recommendations": [
+    // Python language support, debugging, and the Testing panel.
+    "ms-python.python",
+    "ms-python.vscode-pylance",
+    "ms-python.debugpy",
+    // Linting and formatting, matching the style already in the codebase.
+    "charliermarsh.ruff",
+    // Syntax highlighting for configs/*.yaml.
+    "redhat.vscode-yaml"
+  ]
+}

@@ -10,8 +10,9 @@ from __future__ import annotations
 
 import logging
 import platform
+from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Literal
+from typing import Any, Literal
 
 from ..backends.base import Completion, ToolCall, Usage
 from ..config import Config

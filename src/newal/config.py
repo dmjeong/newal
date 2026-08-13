@@ -215,7 +215,7 @@ class Config(BaseModel):
     ui: UIConfig = Field(default_factory=UIConfig)
 
     @model_validator(mode="after")
-    def _needs_a_generation_model(self) -> "Config":
+    def _needs_a_generation_model(self) -> Config:
         if not self.enabled_models(task="generate"):
             raise ValueError(
                 "at least one enabled model with task 'generate' is required; "

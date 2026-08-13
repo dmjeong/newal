@@ -9,9 +9,11 @@ from pathlib import Path
 from typing import Any
 
 import typer
+import yaml
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
 from rich.table import Table
 
 from . import __version__
@@ -350,7 +352,7 @@ def serve(
     verbose: bool = typer.Option(False, "--verbose", "-v"),
 ) -> None:
     """Start the inference server only, and keep it running."""
-    _configure_logging(True if verbose else False)
+    _configure_logging(verbose)
     config = load_config(config_path)
 
     console.print(f"[cyan]starting {len(config.enabled_models())} server(s)...[/]")
@@ -387,6 +389,39 @@ def index(
         f"removed {stats.files_removed}\n"
         f"{repo_index.store.chunk_count()} chunks in {repo_index.store.db_path}"
     )
+
+
+@app.command()
+def config(
+    config_path: Path = typer.Option(None, "--config", "-c"),
+    section: str = typer.Option(None, "--section", "-s", help="Show one section only."),
+) -> None:
+    """Print the merged configuration.
+
+    Config comes from four layers, so "why is it using that model?" is a common
+    question. This prints what they actually resolved to.
+    """
+    try:
+        resolved = load_config(config_path)
+    except (FileNotFoundError, ValueError) as exc:
+        console.print(f"[bold red]invalid config:[/] {exc}")
+        raise typer.Exit(code=1) from exc
+
+    data = resolved.model_dump()
+    if section:
+        if section not in data:
+            console.print(
+                f"[red]no section {section!r}[/] -- try one of: {', '.join(data)}"
+            )
+            raise typer.Exit(code=1)
+        data = {section: data[section]}
+
+    console.print(Syntax(yaml.safe_dump(data, sort_keys=False, allow_unicode=True),
+                         "yaml", theme="ansi_dark", background_color="default"))
+
+    if section is None:
+        pool = ", ".join(resolved.enabled_models()) or "(none)"
+        console.print(f"[dim]enabled pool members: {pool}[/]")
 
 
 @app.command()

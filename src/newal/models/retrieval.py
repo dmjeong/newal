@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import Protocol, runtime_checkable
 
 import httpx
 from openai import APIConnectionError, APIStatusError, OpenAI
@@ -30,6 +31,27 @@ class RetrievalError(RuntimeError):
 class Scored:
     index: int
     score: float
+
+
+@runtime_checkable
+class Embedder(Protocol):
+    """Anything that can turn texts into vectors.
+
+    Declared as a protocol so the indexer and the routing classifier can be
+    typed against the capability rather than against ``object``, and so tests
+    can substitute a deterministic stand-in.
+    """
+
+    def embed(self, texts: list[str], batch_size: int = ...) -> list[list[float]]:
+        ...
+
+
+@runtime_checkable
+class Reranker(Protocol):
+    """Anything that can order documents by relevance to a query."""
+
+    def rerank(self, query: str, documents: list[str], *, top_k: int) -> list[Scored]:
+        ...
 
 
 class EmbeddingClient:
@@ -143,7 +165,7 @@ def cosine_similarity(a: list[float], b: list[float]) -> float:
     """Cosine similarity without a numpy round trip for a single pair."""
     if not a or not b or len(a) != len(b):
         return 0.0
-    dot = sum(x * y for x, y in zip(a, b))
+    dot = sum(x * y for x, y in zip(a, b, strict=True))
     norm_a = sum(x * x for x in a) ** 0.5
     norm_b = sum(y * y for y in b) ** 0.5
     if norm_a == 0.0 or norm_b == 0.0:

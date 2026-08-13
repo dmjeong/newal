@@ -23,6 +23,7 @@ from pathlib import Path
 import numpy as np
 
 from ..config import MemoryConfig
+from ..models.retrieval import Embedder, Reranker
 from .bm25 import BM25Index
 from .fusion import reciprocal_rank_fusion
 from .store import Chunk, MemoryStore
@@ -125,8 +126,8 @@ class RepoIndex:
         config: MemoryConfig,
         store: MemoryStore,
         *,
-        embedder: object | None = None,
-        reranker: object | None = None,
+        embedder: Embedder | None = None,
+        reranker: Reranker | None = None,
     ) -> None:
         self.root = root
         self.config = config
@@ -135,7 +136,9 @@ class RepoIndex:
         self.reranker = reranker
         self._bm25: BM25Index | None = None
 
-    def attach_models(self, *, embedder: object | None, reranker: object | None) -> None:
+    def attach_models(
+        self, *, embedder: Embedder | None, reranker: Reranker | None
+    ) -> None:
         """Wire in retrieval models after the pool has started."""
         self.embedder = embedder
         self.reranker = reranker
@@ -203,12 +206,14 @@ class RepoIndex:
             return 0
 
         try:
-            vectors = self.embedder.embed([c.content for c in pending])  # type: ignore[attr-defined]
+            vectors = self.embedder.embed([c.content for c in pending])
         except Exception as exc:  # noqa: BLE001 - retrieval must degrade, not crash
             log.warning("embedding pass failed, continuing with BM25 only: %s", exc)
             return 0
 
-        self.store.set_embeddings(dict(zip((c.id for c in pending), vectors)))
+        # strict: a short vector list would silently leave chunks unembedded.
+        pairs = zip((c.id for c in pending), vectors, strict=True)
+        self.store.set_embeddings(dict(pairs))
         return len(vectors)
 
     # ---- retrieval ------------------------------------------------------------
@@ -232,7 +237,7 @@ class RepoIndex:
             return []
 
         try:
-            query_vector = self.embedder.embed([query])[0]  # type: ignore[attr-defined]
+            query_vector = self.embedder.embed([query])[0]
         except Exception as exc:  # noqa: BLE001 - degrade to BM25
             log.warning("dense search unavailable: %s", exc)
             return []
@@ -250,7 +255,7 @@ class RepoIndex:
 
     def _rerank(self, query: str, candidates: list[Chunk], top_k: int) -> list[Retrieved]:
         try:
-            scored = self.reranker.rerank(  # type: ignore[attr-defined]
+            scored = self.reranker.rerank(
                 query, [c.content for c in candidates], top_k=top_k
             )
         except Exception as exc:  # noqa: BLE001 - degrade to fused order

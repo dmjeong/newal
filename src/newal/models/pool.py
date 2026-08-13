@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable
 
 from ..backends import Backend, BackendError, build_backend
 from ..backends.launcher import ServerProcess, ensure_server, is_server_up

@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from newal.models.roles import Role
-from newal.models.router import Route, RouteSignals, Router, difficulty_score
+from newal.models.router import Route, Router, RouteSignals, difficulty_score
 
 
 @pytest.fixture

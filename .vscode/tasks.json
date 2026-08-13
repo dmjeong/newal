@@ -1,0 +1,51 @@
+{
+  // Run from the command palette (Ctrl+Shift+P) -> "Tasks: Run Task".
+  // "setup" is the one to run first on a fresh clone.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "setup: create venv and install",
+      "detail": "One-time setup on a fresh clone. Creates .venv and installs newal in editable mode.",
+      "type": "shell",
+      "command": "python -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev,video]'",
+      "windows": {
+        "command": "python -m venv .venv; .venv\\Scripts\\python.exe -m pip install --upgrade pip; .venv\\Scripts\\python.exe -m pip install -e '.[dev,video]'"
+      },
+      "problemMatcher": [],
+      "group": "build"
+    },
+    {
+      "label": "setup: install the vLLM inference engine",
+      "detail": "Needed to actually serve a model. Large download. Skip on machines without an NVIDIA GPU.",
+      "type": "shell",
+      "command": ".venv/bin/python -m pip install vllm",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m pip install vllm" },
+      "problemMatcher": []
+    },
+    {
+      "label": "test",
+      "detail": "Run the full test suite. Needs no GPU and no model.",
+      "type": "shell",
+      "command": ".venv/bin/python -m pytest -q",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m pytest -q" },
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true }
+    },
+    {
+      "label": "index the workspace",
+      "detail": "Build the retrieval index without starting a chat session or a model.",
+      "type": "shell",
+      "command": ".venv/bin/python -m newal index",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m newal index" },
+      "problemMatcher": []
+    },
+    {
+      "label": "show the resolved config",
+      "detail": "Print the merged configuration, to check what a config or env override actually did.",
+      "type": "shell",
+      "command": ".venv/bin/python -m newal config",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m newal config" },
+      "problemMatcher": []
+    }
+  ]
+}

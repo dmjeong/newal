@@ -44,7 +44,7 @@ class BM25Index:
     _avg_length: float = 0.0
 
     @classmethod
-    def build(cls, documents: dict[str, str]) -> "BM25Index":
+    def build(cls, documents: dict[str, str]) -> BM25Index:
         index = cls()
         for doc_id, text in documents.items():
             tokens = tokenize(text)

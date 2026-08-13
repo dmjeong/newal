@@ -11,7 +11,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
-from .tools import ToolResult, Toolbox
+from .tools import Toolbox, ToolResult
 
 log = logging.getLogger(__name__)
 

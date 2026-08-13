@@ -2,9 +2,40 @@
 
 **Qwen 모델 풀 기반 로컬 멀티모달 코딩 어시스턴트** — 텍스트 · 이미지 · 동영상 입력을 받아 내 PC에서만 동작합니다.
 
-Python · Visual Studio 2026 · 완전 오프라인 · 사용량 제한 없음 · 무료.
+Python · VS Code · 완전 오프라인 · 사용량 제한 없음 · 무료.
 
 **v2.0** — 정규식 휴리스틱에서 **학습된 자동 모델 선택**으로 전환. GPT/Claude처럼 질문을 보고 알아서 고릅니다.
+
+---
+
+## 빠른 시작
+
+```bash
+git clone https://github.com/dmjeong/newal && cd newal
+code .                        # VS Code로 열기
+```
+
+VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and install`**
+하나만 누르면 가상환경 생성 + 설치가 끝납니다. 그다음 **F5 → `newal: chat`**.
+
+터미널로 하려면:
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -e ".[dev,video]"
+pytest -q                          # 158개 통과하면 설치 성공 (GPU/모델 불필요)
+```
+
+여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
+
+```bash
+pip install vllm                   # NVIDIA GPU 필요
+newal chat                         # 첫 실행 시 가중치 자동 다운로드 (수십 GB)
+```
+
+> **GPU가 없거나 vLLM 설치가 안 될 때:** `newal chat` 대신 테스트와 `newal index`,
+> `newal config`는 그대로 동작합니다. 코드를 먼저 둘러보기엔 충분합니다.
 
 ---
 
@@ -214,36 +245,60 @@ learned: strong <- '변수 이름 바꿔줘'    ← 다음엔 처음부터 heavy
 
 ---
 
-## 설치 (Windows + Visual Studio 2026)
+## 설치 상세
 
-### 1. 프로젝트 열기
+### 1. VS Code로 열기
 
+```bash
+code .
 ```
-File → Open → Project/Solution → newal.sln
-```
-폴더 모드로 열어도 `launch.vs.json` 실행 구성이 잡힙니다.
 
-### 2. 가상환경 + 의존성
+`.vscode/`에 실행 구성이 커밋되어 있어서 폴더만 열면 바로 잡힙니다.
+처음 열면 권장 확장(Python, Pylance, Ruff) 설치를 물어봅니다 — 설치하세요.
+Pylance가 있어야 `src/` 레이아웃에서 정의로 이동(F12)이 동작합니다.
 
-```powershell
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-pip install vllm          # 또는 pip install "sglang[all]"
+### 2. 의존성
+
+**Ctrl+Shift+P → Tasks: Run Task** 에서:
+
+| 태스크 | 언제 |
+|---|---|
+| `setup: create venv and install` | 클론 직후 한 번 |
+| `setup: install the vLLM inference engine` | 실제로 모델을 돌릴 때 (용량 큼) |
+| `test` | 아무 때나. GPU 불필요 |
+| `index the workspace` | 검색 인덱스만 다시 만들기 |
+| `show the resolved config` | 설정이 왜 저렇게 먹었는지 확인 |
+
+인터프리터가 안 잡히면 **Ctrl+Shift+P → Python: Select Interpreter → `.venv`**.
+
+### 3. 실행 (F5)
+
+**Ctrl+Shift+D**(Run and Debug 패널)에서 고르거나 **F5**:
+
+| 구성 | 하는 일 |
+|---|---|
+| `newal: chat (interactive)` | 평소 쓰는 것 |
+| `newal: chat (verbose, ...)` | 로그 켜고 실행. 뭔가 안 될 때 |
+| `newal: chat without starting servers` | 서버를 따로 띄워놨을 때 |
+| `newal: start model servers only` | 모델 서버만 |
+| `newal: index the workspace` | 색인만 |
+| `newal: run all tests` / `run the open test file` | 테스트 |
+
+전부 중단점이 걸립니다. 라우팅이 왜 저 모델을 골랐는지 보려면
+`src/newal/models/router.py`의 `route()`에 중단점을 걸고 F5를 누르세요.
+
+터미널만 쓸 거면:
+
+```bash
+newal chat            # 대화
+newal serve           # 모델 서버만
+newal index           # 색인만
+newal config          # 병합된 설정 출력
+newal config -s router  # 한 섹션만
 ```
 
 > **Windows에서 vLLM 설치가 깨질 때:** WSL2를 쓰거나 `configs/local.yaml`에
 > `runtime: {kind: transformers}`로 폴백하세요 (느리지만 서버 불필요).
-
-### 3. 실행
-
-VS 실행 버튼 드롭다운: **newal: chat** / **newal: start Qwen servers** / **newal: run tests**
-
-```powershell
-python -m newal chat
-```
-
-첫 실행 시 가중치를 자동으로 내려받습니다 (수십 GB, 시간 걸림).
 
 ---
 
@@ -340,18 +395,95 @@ media:
 
 ---
 
+## 코드 읽는 법
+
+5,000줄 정도라 한 번에 보면 막막합니다. **읽는 순서**를 추천합니다.
+
+### 한 번의 대화가 지나가는 경로
+
+```
+cli.py                사용자 입력 받기, /명령 처리
+  └─ agent/loop.py    ★ 여기가 심장. 아래를 순서대로 호출
+       ├─ models/router.py      어느 모델로 보낼지 결정
+       ├─ backends/…            결정된 모델 호출
+       ├─ agent/tools.py        모델이 요청한 도구 실행 (파일 읽기/수정/셸)
+       └─ agent/verifier.py     테스트 돌려서 검증, 실패하면 위로 되돌림
+```
+
+**`agent/loop.py`의 `Agent.run()` 하나만 읽어도 전체 구조가 잡힙니다.** (약 40줄)
+
+### 파일별 역할
+
+| 파일 | 줄 | 역할 |
+|---|---|---|
+| **`agent/loop.py`** | 515 | ★ 실행 루프. 계획 → 도구 → 검증 → 수리 |
+| `agent/tools.py` | 485 | 모델이 쓰는 도구 + 워크스페이스 샌드박스 |
+| `cli.py` | 403 | 터미널 UI, `/명령` |
+| `config.py` | 336 | 설정 4계층 병합 |
+| `memory/store.py` | 326 | SQLite — 청크 · 노트 · 라우팅 학습 데이터 |
+| `memory/indexer.py` | 324 | 색인 + 3단 하이브리드 검색 |
+| `media/video.py` | 291 | ★ 동영상 → 장면 전환 키프레임 |
+| `models/classifier.py` | 270 | ★ 학습된 쿼리 분류 (semantic / llm) |
+| `models/router.py` | 269 | ★ 난이도 점수 + 티어 결정 |
+| `backends/launcher.py` | 258 | vLLM/SGLang 서버 기동 |
+| `models/pool.py` | 198 | 모델 풀 생명주기 |
+| `backends/openai_compat.py` | 182 | 모델 호출 (thinking 스위치 처리) |
+| `models/retrieval.py` | 151 | 임베딩 · 재정렬 클라이언트 |
+| `agent/prompts.py` | 100 | 시스템 프롬프트 |
+| `memory/bm25.py` | 98 | BM25 (외부 의존성 없이 직접 구현) |
+| `media/budget.py` | 90 | 시각 토큰 예산 계산 |
+| `agent/verifier.py` | 89 | 테스트 명령 탐지 + 실행 |
+| `memory/fusion.py` | 62 | RRF 순위 융합 |
+| `models/roles.py` | 47 | 역할 정의 + 난이도 기준점 |
+
+★ = 이 프로젝트에서 실제로 재미있는 부분
+
+### 관심사별 진입점
+
+| 알고 싶은 것 | 볼 파일 |
+|---|---|
+| 모델을 어떻게 고르나 | `models/router.py` → `difficulty_score()`, `Router.route()` |
+| 자동 선택이 어떻게 학습되나 | `models/classifier.py` → `label_from_outcome()` |
+| 동영상에서 프레임을 어떻게 고르나 | `media/video.py` → `select_keyframes()` |
+| 검색이 어떻게 되나 | `memory/indexer.py` → `RepoIndex.search()` |
+| 모델이 파일을 어떻게 고치나 | `agent/tools.py` → `_tool_edit_file()` |
+| 왜 워크스페이스 밖으로 못 나가나 | `agent/tools.py` → `Workspace.resolve()` |
+| 검증 루프 | `agent/verifier.py` + `loop.py` → `_verify_and_repair()` |
+
+### 테스트가 곧 명세입니다
+
+GPU 없이 158개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+
+| 테스트 | 대상 |
+|---|---|
+| `test_router.py` | 라우팅 결정 (한국어 포함) |
+| `test_classifier.py` | 학습된 분류 + 결과 라벨링 |
+| `test_video.py` | 키프레임 선택 정책 |
+| `test_tools.py` | 샌드박스 · 파일 조작 · 셸 차단 |
+| `test_retrieval.py` | 하이브리드 검색 + 각 단계 폴백 |
+| `test_fusion.py` | RRF |
+| `test_budget.py` | 시각 토큰 예산 |
+| `test_bm25.py` / `test_config.py` | 검색 / 설정 |
+
+VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
+
+---
+
 ## 개발
 
-```powershell
-python -m pytest -q          # 158개 테스트
-python -m newal index        # 저장소 색인만
+```bash
+pytest -q                    # 158개 테스트 (GPU 불필요)
+ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
+newal index                  # 저장소 색인만
+newal config                 # 병합된 설정 확인
+newal config -s router       # 한 섹션만
 ```
 
 ```
 src/newal/
-├─ config.py          설정 로딩 (YAML 레이어 + 환경변수)
+├─ config.py          설정 로딩 (YAML 4계층 + 환경변수)
 ├─ cli.py             대화형 터미널
-├─ models/            ★ 모델 풀 · 라우터 · 분류기 · 역할 · 임베딩/재정렬
+├─ models/            모델 풀 · 라우터 · 분류기 · 임베딩/재정렬
 ├─ backends/          vLLM/SGLang 클라이언트 · 서버 기동 · transformers 폴백
 ├─ media/             이미지/동영상 → 콘텐츠 파트, 시각 토큰 예산
 ├─ memory/            SQLite · BM25 · RRF 융합 · 증분 색인
@@ -362,7 +494,8 @@ src/newal/
 
 ### 버전 정책
 
-- **2.0** — 학습된 자동 모델 선택 (현재)
+- **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리 (현재)
+- **2.0** — 학습된 자동 모델 선택
 - **1.0** — 이종 모델 풀 + 휴리스틱 라우터
 - **0.1** — 단일 모델 + 검증 루프
 

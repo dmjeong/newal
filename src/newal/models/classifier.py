@@ -27,6 +27,8 @@ from typing import Protocol, runtime_checkable
 
 import numpy as np
 
+from .retrieval import Embedder
+
 log = logging.getLogger(__name__)
 
 #: Labels a classifier can return. "strong" means route to the top tier.
@@ -102,7 +104,7 @@ class SemanticClassifier:
 
     def __init__(
         self,
-        embedder: object,
+        embedder: Embedder,
         *,
         exemplars: list[tuple[str, str]] | None = None,
         neighbours: int = 5,
@@ -123,7 +125,7 @@ class SemanticClassifier:
             return
 
         try:
-            vectors = self._embedder.embed(self._texts)  # type: ignore[attr-defined]
+            vectors = self._embedder.embed(self._texts)
         except Exception as exc:  # noqa: BLE001 - routing must never hard-fail
             log.warning("could not embed routing exemplars: %s", exc)
             self._texts, self._labels = [], []
@@ -143,7 +145,8 @@ class SemanticClassifier:
             return None
 
         try:
-            query = np.asarray(self._embedder.embed([prompt])[0], dtype=np.float32)  # type: ignore[attr-defined]
+            raw = self._embedder.embed([prompt])[0]
+            query = np.asarray(raw, dtype=np.float32)
         except Exception as exc:  # noqa: BLE001 - degrade to the heuristic
             log.warning("semantic routing unavailable: %s", exc)
             return None

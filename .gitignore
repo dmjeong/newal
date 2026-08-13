@@ -7,10 +7,14 @@ dist/
 venv/
 env/
 
-# Visual Studio
+# Editors
 .vs/
 *.user
 *.suo
+.idea/
+# .vscode/ is committed on purpose: launch configs and settings are part of
+# the project. Personal overrides go in .vscode/settings.local.json.
+.vscode/*.local.json
 
 # newal runtime state
 .newal/

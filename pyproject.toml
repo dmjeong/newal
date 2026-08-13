@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newal"
-version = "2.0.0"
+version = "2.1.0"
 description = "Local multimodal coding assistant powered by a pool of Qwen models (text + image + video)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -39,3 +39,23 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM", "C4"]
+ignore = [
+    # Long lines are reported by E501 only above line-length; the codebase
+    # deliberately keeps prose comments readable rather than reflowed.
+    "E203",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# typer.Option() in a default is the documented Typer idiom, not a mutable
+# default-argument bug.
+"src/newal/cli.py" = ["B008"]
+# Tests use fixtures and stand-ins where a few of these rules fight clarity.
+"tests/*" = ["B011", "SIM117"]
