@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+env/
+
+# Visual Studio
+.vs/
+*.user
+*.suo
+
+# newal runtime state
+.newal/
+*.log
+
+# Local overrides
+configs/local.yaml
+.env

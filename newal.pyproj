@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectGuid>3d8a1c77-6b4e-4f2a-9e51-0c7b2a9d4e10</ProjectGuid>
+    <ProjectHome>.</ProjectHome>
+    <StartupFile>src\newal\__main__.py</StartupFile>
+    <SearchPath>src</SearchPath>
+    <WorkingDirectory>.</WorkingDirectory>
+    <OutputPath>.</OutputPath>
+    <Name>newal</Name>
+    <RootNamespace>newal</RootNamespace>
+    <InterpreterId>MSBuild|venv|$(MSBuildProjectFullPath)</InterpreterId>
+    <IsWindowsApplication>False</IsWindowsApplication>
+    <TestFramework>pytest</TestFramework>
+    <UnitTestRootDirectory>tests</UnitTestRootDirectory>
+    <UnitTestPattern>test*.py</UnitTestPattern>
+    <Environment>PYTHONPATH=src</Environment>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Release' ">
+    <DebugSymbols>true</DebugSymbols>
+    <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="src\newal\__init__.py" />
+    <Compile Include="src\newal\__main__.py" />
+    <Compile Include="src\newal\config.py" />
+    <Compile Include="src\newal\cli.py" />
+    <Compile Include="src\newal\backends\__init__.py" />
+    <Compile Include="src\newal\backends\base.py" />
+    <Compile Include="src\newal\backends\openai_compat.py" />
+    <Compile Include="src\newal\backends\launcher.py" />
+    <Compile Include="src\newal\media\__init__.py" />
+    <Compile Include="src\newal\media\budget.py" />
+    <Compile Include="src\newal\media\images.py" />
+    <Compile Include="src\newal\media\video.py" />
+    <Compile Include="src\newal\agent\__init__.py" />
+    <Compile Include="src\newal\agent\loop.py" />
+    <Compile Include="src\newal\agent\prompts.py" />
+    <Compile Include="src\newal\agent\tools.py" />
+    <Compile Include="src\newal\agent\verifier.py" />
+    <Compile Include="src\newal\memory\__init__.py" />
+    <Compile Include="src\newal\memory\bm25.py" />
+    <Compile Include="src\newal\memory\indexer.py" />
+    <Compile Include="src\newal\memory\store.py" />
+    <Compile Include="tests\test_bm25.py" />
+    <Compile Include="tests\test_budget.py" />
+    <Compile Include="tests\test_tools.py" />
+    <Compile Include="tests\test_video.py" />
+  </ItemGroup>
+  <ItemGroup>
+    <Folder Include="src\" />
+    <Folder Include="src\newal\" />
+    <Folder Include="src\newal\agent\" />
+    <Folder Include="src\newal\backends\" />
+    <Folder Include="src\newal\media\" />
+    <Folder Include="src\newal\memory\" />
+    <Folder Include="configs\" />
+    <Folder Include="tests\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Content Include="configs\default.yaml" />
+    <Content Include="requirements.txt" />
+    <Content Include="README.md" />
+  </ItemGroup>
+  <ItemGroup>
+    <Interpreter Include="venv\">
+      <Id>venv</Id>
+      <Version>3.11</Version>
+      <Description>venv (Python 3.11)</Description>
+      <InterpreterPath>Scripts\python.exe</InterpreterPath>
+      <WindowsInterpreterPath>Scripts\pythonw.exe</WindowsInterpreterPath>
+      <PathEnvironmentVariable>PYTHONPATH</PathEnvironmentVariable>
+      <Architecture>X64</Architecture>
+    </Interpreter>
+  </ItemGroup>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
+</Project>

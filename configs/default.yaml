@@ -1,0 +1,87 @@
+# newal default configuration.
+# Copy to configs/local.yaml to override without touching version control,
+# or point at any file with:  newal --config path/to/file.yaml
+
+model:
+  # Qwen3.6-35B-A3B: 35B total / 3B active MoE. Natively multimodal
+  # (text + image + video), 256K context, tuned for agentic coding.
+  # Smaller dense alternatives: Qwen/Qwen3.5-9B, Qwen/Qwen3.5-4B
+  id: "Qwen/Qwen3.6-35B-A3B"
+  context_length: 262144
+  # Qwen3.5+ runs in thinking mode by default. Worth the tokens for hard
+  # tasks, wasteful for simple edits -- the agent toggles this per phase.
+  enable_thinking: true
+  temperature: 0.7
+  top_p: 0.95
+  max_output_tokens: 32768
+
+backend:
+  # openai_compat -> talk to a vLLM/SGLang server (recommended, fast)
+  # transformers  -> load in-process via transformers (slow, no server needed)
+  kind: "openai_compat"
+  base_url: "http://127.0.0.1:8000/v1"
+  api_key: "EMPTY"
+  request_timeout_s: 600
+
+  # Start the inference server automatically if base_url is not answering.
+  autostart: true
+  engine: "vllm"           # vllm | sglang
+  gpu_memory_utilization: 0.90
+  tensor_parallel_size: 1
+  # Serving 256K context costs a lot of KV cache. Lower this if you OOM.
+  max_model_len: 65536
+  quantization: null       # null | "fp8" | "awq" | "gptq"
+  startup_timeout_s: 900
+  extra_args: []
+
+media:
+  # Total visual tokens allowed per turn. Images and video frames share
+  # this budget; the sampler downscales/drops frames to stay under it.
+  visual_token_budget: 16384
+  image_max_pixels: 1638400      # ~1280x1280, before the model's own resize
+  video:
+    max_frames: 32
+    # uniform    -> evenly spaced frames
+    # scene      -> frames at detected scene changes, padded uniformly
+    strategy: "scene"
+    scene_threshold: 0.28        # 0..1 histogram distance; lower = more cuts
+    frame_max_pixels: 409600     # ~640x640 per frame
+    include_timestamps: true
+
+agent:
+  max_steps: 40
+  # Draft a plan before touching anything. Costs one extra call, reliably
+  # improves multi-file edits.
+  plan_first: true
+  # After edits, re-read the diff and run the verify command. This is the
+  # single biggest quality lever in the whole scaffold.
+  verify: true
+  verify_command: null           # e.g. "python -m pytest -q"; null = auto-detect
+  max_verify_retries: 2
+
+tools:
+  workspace_root: "."
+  # ask | allow | deny -- applies to run_shell and run_python
+  shell_policy: "ask"
+  shell_timeout_s: 180
+  max_file_read_bytes: 262144
+  # Never readable/writable by tools regardless of policy.
+  denied_paths: [".git", ".env", ".venv", "node_modules", "__pycache__"]
+
+memory:
+  enabled: true
+  db_path: ".newal/memory.db"
+  # File globs pulled into the retrieval index.
+  index_globs: ["**/*.py", "**/*.md", "**/*.toml", "**/*.yaml", "**/*.yml"]
+  index_exclude: [".venv/**", "node_modules/**", ".git/**", ".newal/**"]
+  chunk_lines: 80
+  chunk_overlap_lines: 15
+  retrieve_top_k: 8
+  # Optional dense reranking over BM25 candidates. Requires the `dense` extra.
+  dense_rerank: false
+  dense_model: "sentence-transformers/all-MiniLM-L6-v2"
+
+ui:
+  show_thinking: false
+  show_token_usage: true
+  transcript_dir: ".newal/transcripts"

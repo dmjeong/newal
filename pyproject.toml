@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "newal"
+version = "0.1.0"
+description = "Local multimodal coding assistant powered by Qwen (text + image + video)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+
+dependencies = [
+    "openai>=1.40",
+    "httpx>=0.27",
+    "pydantic>=2.7",
+    "pyyaml>=6.0",
+    "rich>=13.7",
+    "typer>=0.12",
+    "pillow>=10.3",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+# Video keyframe extraction. Without this, only images and text work.
+video = ["opencv-python-headless>=4.9"]
+# Dense retrieval on top of the built-in BM25. Optional: BM25 alone works fine.
+dense = ["sentence-transformers>=3.0"]
+# In-process inference without a separate server (slow, but no vLLM needed).
+transformers = ["transformers>=4.57", "torch>=2.4", "accelerate>=0.33"]
+dev = ["pytest>=8.2", "pytest-asyncio>=0.23"]
+
+[project.scripts]
+newal = "newal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

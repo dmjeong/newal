@@ -1,0 +1,41 @@
+{
+  "version": "0.2.1",
+  "defaults": {},
+  "configurations": [
+    {
+      "type": "python",
+      "interpreter": "venv/Scripts/python.exe",
+      "interpreterArguments": "-m newal",
+      "scriptArguments": "chat",
+      "name": "newal: chat (interactive)",
+      "workingDirectory": "${workspaceRoot}",
+      "env": {
+        "PYTHONPATH": "${workspaceRoot}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "type": "python",
+      "interpreter": "venv/Scripts/python.exe",
+      "interpreterArguments": "-m newal",
+      "scriptArguments": "serve",
+      "name": "newal: start Qwen server only",
+      "workingDirectory": "${workspaceRoot}",
+      "env": {
+        "PYTHONPATH": "${workspaceRoot}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "type": "python",
+      "interpreter": "venv/Scripts/python.exe",
+      "interpreterArguments": "-m pytest",
+      "scriptArguments": "-q",
+      "name": "newal: run tests",
+      "workingDirectory": "${workspaceRoot}",
+      "env": {
+        "PYTHONPATH": "${workspaceRoot}/src"
+      }
+    }
+  ]
+}
