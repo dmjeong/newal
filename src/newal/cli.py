@@ -17,7 +17,7 @@ from rich.syntax import Syntax
 from rich.table import Table
 
 from . import __version__
-from .agent import Agent, Toolbox, describe_command
+from .agent import Agent, Toolbox, TranscriptWriter, describe_command
 from .backends import BackendError
 from .config import Config, load_config
 from .media import Attachment, AttachmentError, prepare_attachments
@@ -304,6 +304,15 @@ def chat(
         console.print(f"[bold red]startup failed:[/] {exc}")
         raise typer.Exit(code=1) from exc
 
+    transcript: TranscriptWriter | None = None
+    if config.ui.save_transcripts:
+        root = config.workspace_path()
+        directory = Path(config.ui.transcript_dir)
+        transcript = TranscriptWriter.create(
+            directory if directory.is_absolute() else root / directory
+        )
+        console.print(f"[dim]transcript: {transcript.path}[/]")
+
     pending: list[str] = []
     try:
         while True:
@@ -341,6 +350,28 @@ def chat(
             if config.ui.show_token_usage:
                 console.print(f"[dim]{result.usage.total_tokens:,} tokens · "
                               f"{result.steps} step(s)[/]")
+
+            if transcript is not None:
+                verification = None
+                if result.verification and not result.verification.skipped:
+                    verification = (
+                        result.verification.command,
+                        result.verification.passed,
+                    )
+                transcript.record(
+                    prompt=line,
+                    response=result.text,
+                    routes=result.routes,
+                    attachments=[a.source for a in attachments],
+                    files_written=result.files_written,
+                    verification=verification,
+                    usage_by_model={
+                        key: usage.total_tokens
+                        for key, usage in result.usage_by_model.items()
+                    },
+                    steps=result.steps,
+                    escalations=result.escalations,
+                )
     finally:
         pool.close()
         console.print("[dim]bye[/]")

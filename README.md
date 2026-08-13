@@ -24,7 +24,7 @@ VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and i
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev,video]"
-pytest -q                          # 158개 통과하면 설치 성공 (GPU/모델 불필요)
+pytest -q                          # 172개 통과하면 설치 성공 (GPU/모델 불필요)
 ```
 
 여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
@@ -385,6 +385,20 @@ media:
 
 ---
 
+## 세션 기록
+
+매 턴이 `.newal/transcripts/session-<타임스탬프>.jsonl`에 한 줄씩 쌓입니다 —
+질문, 답변, 어느 모델이 처리했는지, 뭘 고쳤는지, 검증 결과.
+
+**이미지·동영상 프레임은 기록 전에 제거됩니다.** 경로만 남습니다. 동영상 한 턴이
+base64 프레임 수십 장이라 그대로 쓰면 턴당 수 MB씩 불어나고, 사용자 스크린샷이
+예상치 못한 위치에 저장됩니다.
+
+다만 **대화에 등장한 소스 코드는 그대로 남습니다.** 이 디렉터리는 민감하게 다루세요
+(`.gitignore`에 `.newal/`이 이미 들어 있습니다). 끄려면 `ui.save_transcripts: false`.
+
+---
+
 ## 안전장치
 
 - 경로 탈출 차단 (`../`, 절대경로, **심볼릭 링크 우회 포함**)
@@ -452,7 +466,7 @@ cli.py                사용자 입력 받기, /명령 처리
 
 ### 테스트가 곧 명세입니다
 
-GPU 없이 158개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+GPU 없이 172개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
 
 | 테스트 | 대상 |
 |---|---|
@@ -463,6 +477,7 @@ GPU 없이 158개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금�
 | `test_retrieval.py` | 하이브리드 검색 + 각 단계 폴백 |
 | `test_fusion.py` | RRF |
 | `test_budget.py` | 시각 토큰 예산 |
+| `test_transcript.py` | 세션 기록 + 첨부 리댁션 |
 | `test_bm25.py` / `test_config.py` | 검색 / 설정 |
 
 VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
@@ -472,7 +487,7 @@ VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·
 ## 개발
 
 ```bash
-pytest -q                    # 158개 테스트 (GPU 불필요)
+pytest -q                    # 172개 테스트 (GPU 불필요)
 ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
 newal index                  # 저장소 색인만
 newal config                 # 병합된 설정 확인
@@ -494,7 +509,8 @@ src/newal/
 
 ### 버전 정책
 
-- **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리 (현재)
+- **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정 (현재)
+- **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리
 - **2.0** — 학습된 자동 모델 선택
 - **1.0** — 이종 모델 풀 + 휴리스틱 라우터
 - **0.1** — 단일 모델 + 검증 루프

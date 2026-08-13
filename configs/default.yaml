@@ -176,4 +176,8 @@ memory:
 ui:
   show_thinking: false
   show_token_usage: true
+  # One JSONL file per session, one object per turn. Images and video frames
+  # are redacted before writing; code discussed in the turn is not, so treat
+  # this directory as sensitive.
+  save_transcripts: true
   transcript_dir: ".newal/transcripts"

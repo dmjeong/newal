@@ -200,6 +200,9 @@ class MemoryConfig(BaseModel):
 class UIConfig(BaseModel):
     show_thinking: bool = False
     show_token_usage: bool = True
+    #: Write one JSONL file per session. Attachments are redacted before
+    #: writing; source code from the conversation is not.
+    save_transcripts: bool = True
     transcript_dir: str = ".newal/transcripts"
 
 

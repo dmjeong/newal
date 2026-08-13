@@ -4,6 +4,6 @@ Accepts text, images, and video; runs entirely on your own machine against a
 pool of locally served Qwen models (vLLM/SGLang) or in-process transformers.
 """
 
-__version__ = "2.1.0"
+__version__ = "2.1.1"
 
 __all__ = ["__version__"]
