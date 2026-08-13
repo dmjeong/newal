@@ -23,6 +23,7 @@ from .config import Config, load_config
 from .media import Attachment, AttachmentError, prepare_attachments
 from .memory import RepoIndex, build_index
 from .models import ModelPool
+from .training import FORMATS, export
 
 app = typer.Typer(add_completion=False, help="newal -- local multimodal coding assistant")
 console = Console()
@@ -453,6 +454,79 @@ def config(
     if section is None:
         pool = ", ".join(resolved.enabled_models()) or "(none)"
         console.print(f"[dim]enabled pool members: {pool}[/]")
+
+
+@app.command(name="export")
+def export_data(
+    fmt: str = typer.Option(
+        None, "--format", "-f", help=f"One of: {', '.join(FORMATS)}."
+    ),
+    out: Path = typer.Option(None, "--out", "-o", help="Destination JSONL file."),
+    config_path: Path = typer.Option(None, "--config", "-c"),
+    workspace: Path = typer.Option(None, "--workspace", "-w"),
+    include_unverified: bool = typer.Option(
+        False,
+        "--include-unverified",
+        help="SFT only: also export turns the test suite never confirmed.",
+    ),
+    stats: bool = typer.Option(False, "--stats", help="Show what has been captured."),
+    clear: bool = typer.Option(False, "--clear", help="Delete all captured turns."),
+) -> None:
+    """Export captured interactions as a fine-tuning dataset."""
+    overrides: dict[str, Any] = {}
+    if workspace:
+        overrides["tools"] = {"workspace_root": str(workspace)}
+    config = load_config(config_path, overrides=overrides)
+
+    repo_index = build_index(config.workspace_path(), config.memory)
+    store = repo_index.store
+
+    if stats or (not fmt and not clear):
+        counts = store.training_counts()
+        table = Table("captured", "count", box=None)
+        for key, value in counts.items():
+            table.add_row(key.replace("_", " "), f"{value:,}")
+        console.print(table)
+        console.print(f"[dim]{store.db_path}[/]")
+        if not fmt and not clear:
+            console.print(
+                f"[dim]export with: newal export --format {'|'.join(FORMATS)} "
+                "--out data.jsonl[/]"
+            )
+        if not clear:
+            return
+
+    if clear:
+        counts = store.training_counts()
+        total = counts["turns"] + counts["repair_pairs"]
+        if total == 0:
+            console.print("[dim]nothing captured to clear[/]")
+            return
+        answer = console.input(
+            f"[bold yellow]delete {total:,} captured record(s)? [y/N][/] "
+        ).strip().lower()
+        if answer not in {"y", "yes"}:
+            console.print("[dim]kept[/]")
+            return
+        store.clear_training_data()
+        console.print("[green]cleared[/] (notes and the routing set were kept)")
+        return
+
+    if fmt not in FORMATS:
+        console.print(f"[red]--format must be one of:[/] {', '.join(FORMATS)}")
+        raise typer.Exit(code=1)
+    if out is None:
+        console.print("[red]--out is required[/]")
+        raise typer.Exit(code=1)
+
+    written = export(store, fmt, out, include_unverified=include_unverified)
+    if written == 0:
+        console.print(
+            f"[yellow]no {fmt} samples to export.[/] "
+            "Keep using newal -- capture happens as you work."
+        )
+        return
+    console.print(f"[green]wrote {written:,} {fmt} sample(s)[/] to {out}")
 
 
 @app.command()

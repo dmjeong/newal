@@ -173,6 +173,15 @@ memory:
   use_reranker: true
   rerank_candidates: 30
 
+# Capture turns and repair pairs as fine-tuning material. Everything stays in
+# the local memory DB -- nothing is uploaded. Export with `newal export`.
+# The captured turns include source code from the conversation, so treat
+# .newal/memory.db as sensitive. Attachments are always redacted.
+training:
+  enabled: true
+  max_messages_per_turn: 80
+  max_context_messages: 40
+
 ui:
   show_thinking: false
   show_token_usage: true

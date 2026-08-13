@@ -4,7 +4,7 @@
 
 Python · VS Code · 완전 오프라인 · 사용량 제한 없음 · 무료.
 
-**v2.0** — 정규식 휴리스틱에서 **학습된 자동 모델 선택**으로 전환. GPT/Claude처럼 질문을 보고 알아서 고릅니다.
+**v3.0** — 매일 쓰면 그게 곧 **파인튜닝 데이터**가 됩니다. 라벨은 테스트 실행 결과에서 나옵니다.
 
 ---
 
@@ -24,7 +24,7 @@ VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and i
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev,video]"
-pytest -q                          # 172개 통과하면 설치 성공 (GPU/모델 불필요)
+pytest -q                          # 199개 통과하면 설치 성공 (GPU/모델 불필요)
 ```
 
 여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
@@ -385,6 +385,52 @@ media:
 
 ---
 
+## 쓰면 쓸수록 학습 데이터가 쌓입니다 ★
+
+파인튜닝의 진짜 병목은 프레임워크가 아니라 **라벨 붙은 도메인 데이터**입니다.
+newal은 그걸 부산물로 만들어냅니다 — 매 턴이 진짜 저장소에 대한 진짜 요청이고,
+검증 루프가 **테스트를 실제로 돌려서** 객관적인 라벨을 붙이기 때문입니다.
+
+**라벨링 경로에 사람도, LLM judge도 없습니다.** 전부 실행 결과입니다.
+
+```
+한 번에 통과한 턴          → SFT 샘플
+검증 실패 후 수리된 턴      → DPO 선호 쌍 (실패한 편집 = rejected, 통과한 수리 = chosen)
+라우팅 결과                → 분류 데이터셋
+```
+
+```bash
+newal export                                        # 뭐가 쌓였는지 확인
+newal export --format sft     --out sft.jsonl       # {"messages": [...]}
+newal export --format dpo     --out dpo.jsonl       # {"prompt","chosen","rejected"}
+newal export --format routing --out routing.jsonl   # {"text","label"}
+newal export --clear                                # 전부 삭제 (확인 후)
+```
+
+전부 TRL 트레이너가 바로 먹는 형식입니다.
+
+### 데이터 품질을 위해 걸러내는 것
+
+| 제외 대상 | 이유 |
+|---|---|
+| **수리된 턴을 SFT에서 제외** | 히스토리에 실패한 시도가 그대로 남아 있어, 학습하면 **틀린 뒤 고치는 습관**을 배웁니다. 이런 턴은 DPO 쌍으로만 씁니다 |
+| **첨부가 있던 턴 제외** | 이미지는 리댁션돼 사라졌는데 대화는 그림 얘기를 합니다. 학습하면 **못 본 그림을 아는 척**하게 됩니다 |
+| **검증 안 된 턴 제외** | 기본값. `--include-unverified`로 포함 가능 |
+
+### 첫 파인튜닝은 `light`부터
+
+`heavy`를 튜닝할 이유가 없습니다. 작은 모델에게 *이 저장소의 관습*을 가르쳐서
+에스컬레이션 없이 기계적 작업을 처리하게 만드는 게 목표입니다.
+
+**성공 기준이 이미 측정됩니다** — `newal export`의 라우팅 카운트에서 `strong` 비율이
+떨어지면 효과가 있는 겁니다. 별도 벤치마크 없이 실사용에서 나옵니다.
+
+> **개인정보:** 수집된 턴에는 **대화에 등장한 소스 코드가 그대로** 들어갑니다.
+> 전부 로컬(`.newal/memory.db`)이고 어디로도 전송되지 않지만, 민감하게 다루세요.
+> 첨부(이미지·동영상)는 항상 리댁션됩니다. 끄려면 `training.enabled: false`.
+
+---
+
 ## 세션 기록
 
 매 턴이 `.newal/transcripts/session-<타임스탬프>.jsonl`에 한 줄씩 쌓입니다 —
@@ -466,7 +512,7 @@ cli.py                사용자 입력 받기, /명령 처리
 
 ### 테스트가 곧 명세입니다
 
-GPU 없이 172개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+GPU 없이 199개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
 
 | 테스트 | 대상 |
 |---|---|
@@ -478,6 +524,7 @@ GPU 없이 172개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금�
 | `test_fusion.py` | RRF |
 | `test_budget.py` | 시각 토큰 예산 |
 | `test_transcript.py` | 세션 기록 + 첨부 리댁션 |
+| `test_training.py` | 학습 데이터 수집 + SFT/DPO 내보내기 |
 | `test_bm25.py` / `test_config.py` | 검색 / 설정 |
 
 VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
@@ -487,7 +534,7 @@ VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·
 ## 개발
 
 ```bash
-pytest -q                    # 172개 테스트 (GPU 불필요)
+pytest -q                    # 199개 테스트 (GPU 불필요)
 ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
 newal index                  # 저장소 색인만
 newal config                 # 병합된 설정 확인
@@ -509,7 +556,8 @@ src/newal/
 
 ### 버전 정책
 
-- **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정 (현재)
+- **3.0** — 파인튜닝 데이터 수집 + `newal export` (현재)
+- **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정
 - **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리
 - **2.0** — 학습된 자동 모델 선택
 - **1.0** — 이종 모델 풀 + 휴리스틱 라우터

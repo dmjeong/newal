@@ -7,6 +7,7 @@ into the system prompt on the next run.
 
 from __future__ import annotations
 
+import json
 import logging
 import sqlite3
 import time
@@ -21,7 +22,7 @@ log = logging.getLogger(__name__)
 #: Bumped whenever the chunk/file tables change shape. The index is a
 #: rebuildable cache, so a mismatch drops and re-derives it rather than
 #: attempting a migration. Notes are user data and always survive.
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS chunks (
@@ -61,6 +62,39 @@ CREATE TABLE IF NOT EXISTS route_outcomes (
     created_at  REAL NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_route_label ON route_outcomes(label);
+
+-- Full turns and repair pairs, kept as fine-tuning material. Like notes and
+-- routing outcomes this is captured data, not a derived cache, so it survives
+-- a schema rebuild. `messages` holds a redacted message list as JSON.
+CREATE TABLE IF NOT EXISTS turns (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id      TEXT NOT NULL,
+    prompt          TEXT NOT NULL,
+    messages        TEXT NOT NULL,
+    model_key       TEXT NOT NULL,
+    verify_ok       INTEGER,
+    escalated       INTEGER NOT NULL,
+    -- True when verification rejected the first attempt and a repair followed.
+    -- Such a turn is valuable as a DPO pair but poor SFT material: the history
+    -- still contains the failed attempt, so training on it teaches the model
+    -- to make the mistake before correcting it.
+    repaired        INTEGER NOT NULL DEFAULT 0,
+    had_attachments INTEGER NOT NULL,
+    created_at      REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_turns_verify ON turns(verify_ok);
+
+CREATE TABLE IF NOT EXISTS repair_pairs (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id     TEXT NOT NULL,
+    prompt         TEXT NOT NULL,
+    context        TEXT NOT NULL,
+    rejected       TEXT NOT NULL,
+    chosen         TEXT NOT NULL,
+    failure_output TEXT NOT NULL,
+    verify_command TEXT,
+    created_at     REAL NOT NULL
+);
 """
 
 
@@ -324,3 +358,127 @@ class MemoryStore:
     def clear_route_outcomes(self) -> None:
         with self._conn:
             self._conn.execute("DELETE FROM route_outcomes")
+
+    # ---- captured training data -----------------------------------------------
+
+    def record_turn(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        messages: list[dict],
+        model_key: str,
+        verify_ok: bool | None,
+        escalated: bool,
+        had_attachments: bool,
+        repaired: bool = False,
+    ) -> int:
+        """Store one completed turn. ``messages`` must already be redacted."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO turns (session_id, prompt, messages, model_key, "
+                "verify_ok, escalated, repaired, had_attachments, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    prompt,
+                    json.dumps(messages, ensure_ascii=False),
+                    model_key,
+                    None if verify_ok is None else int(verify_ok),
+                    int(escalated),
+                    int(repaired),
+                    int(had_attachments),
+                    time.time(),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def record_repair_pair(
+        self,
+        *,
+        session_id: str,
+        prompt: str,
+        context: list[dict],
+        rejected: list[dict],
+        chosen: list[dict],
+        failure_output: str,
+        verify_command: str | None,
+    ) -> int:
+        """Store a rejected/chosen pair. All message lists must be redacted."""
+        with self._conn:
+            cursor = self._conn.execute(
+                "INSERT INTO repair_pairs (session_id, prompt, context, rejected, "
+                "chosen, failure_output, verify_command, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    session_id,
+                    prompt,
+                    json.dumps(context, ensure_ascii=False),
+                    json.dumps(rejected, ensure_ascii=False),
+                    json.dumps(chosen, ensure_ascii=False),
+                    failure_output[:20_000],
+                    verify_command,
+                    time.time(),
+                ),
+            )
+        return int(cursor.lastrowid)
+
+    def turns(
+        self,
+        *,
+        verified_only: bool = False,
+        exclude_attachments: bool = False,
+        exclude_repaired: bool = False,
+    ) -> list[dict]:
+        sql = "SELECT * FROM turns"
+        clauses: list[str] = []
+        if verified_only:
+            clauses.append("verify_ok = 1")
+        if exclude_attachments:
+            clauses.append("had_attachments = 0")
+        if exclude_repaired:
+            clauses.append("repaired = 0")
+        if clauses:
+            sql += " WHERE " + " AND ".join(clauses)
+        sql += " ORDER BY created_at"
+
+        rows = self._conn.execute(sql).fetchall()
+        return [{**dict(row), "messages": json.loads(row["messages"])} for row in rows]
+
+    def repair_pairs(self) -> list[dict]:
+        rows = self._conn.execute(
+            "SELECT * FROM repair_pairs ORDER BY created_at"
+        ).fetchall()
+        return [
+            {
+                **dict(row),
+                "context": json.loads(row["context"]),
+                "rejected": json.loads(row["rejected"]),
+                "chosen": json.loads(row["chosen"]),
+            }
+            for row in rows
+        ]
+
+    def training_counts(self) -> dict[str, int]:
+        def count(sql: str) -> int:
+            return int(self._conn.execute(sql).fetchone()[0])
+
+        return {
+            "turns": count("SELECT COUNT(*) FROM turns"),
+            "turns_verified": count("SELECT COUNT(*) FROM turns WHERE verify_ok = 1"),
+            "turns_clean_first_try": count(
+                "SELECT COUNT(*) FROM turns "
+                "WHERE verify_ok = 1 AND repaired = 0 AND had_attachments = 0"
+            ),
+            "turns_with_attachments": count(
+                "SELECT COUNT(*) FROM turns WHERE had_attachments = 1"
+            ),
+            "repair_pairs": count("SELECT COUNT(*) FROM repair_pairs"),
+            "route_outcomes": count("SELECT COUNT(*) FROM route_outcomes"),
+        }
+
+    def clear_training_data(self) -> None:
+        """Delete every captured turn and repair pair. Notes are kept."""
+        with self._conn:
+            self._conn.execute("DELETE FROM turns")
+            self._conn.execute("DELETE FROM repair_pairs")

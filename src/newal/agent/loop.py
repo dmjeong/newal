@@ -21,6 +21,7 @@ from ..memory import RepoIndex
 from ..models import ModelPool, Role, Route, RouteSignals, label_from_outcome
 from .prompts import PLAN_PROMPT, VERIFY_PROMPT, VIDEO_HINT, build_system_prompt, load_project_doc
 from .tools import Toolbox, ToolResult
+from .transcript import new_session_id, redact_messages
 from .verifier import VerificationResult, run_verification
 
 log = logging.getLogger(__name__)
@@ -87,6 +88,14 @@ class Agent:
         # The tier the turn actually started on, which is what the outcome
         # label is about -- later escalations are the outcome, not the choice.
         self._first_route: Route | None = None
+
+        # Training capture. `_attempt_start` marks where the assistant's first
+        # attempt begins, so a later verification failure can slice out exactly
+        # the messages that produced it.
+        self.session_id = new_session_id()
+        self._attempt_start = 0
+        self._repair_start = 0
+        self._rejected_attempt: list[dict[str, Any]] | None = None
 
     def _system_prompt(self) -> str:
         notes: list[str] = []
@@ -167,6 +176,11 @@ class Agent:
         if self.config.agent.plan_first:
             plan = self._draft_plan()
 
+        # Everything appended from here is the assistant's attempt at the task,
+        # which is what a preference pair needs to isolate.
+        self._attempt_start = len(self.messages)
+        self._rejected_attempt = None
+
         result = self._act()
         result.plan = plan
 
@@ -180,7 +194,68 @@ class Agent:
         result.escalations = self._escalations
 
         self._record_routing_outcome(user_text, result)
+        self._record_turn(user_text, result, bool(attachments))
         return result
+
+    # ---- training capture -----------------------------------------------------
+
+    def _capture_enabled(self) -> bool:
+        return self.index is not None and self.config.training.enabled
+
+    def _record_turn(self, prompt: str, result: AgentResult, had_attachments: bool) -> None:
+        """Store the finished turn as fine-tuning material."""
+        if not self._capture_enabled() or not prompt.strip():
+            return
+
+        messages = self.messages[self._attempt_start :]
+        if not messages or len(messages) > self.config.training.max_messages_per_turn:
+            return
+
+        verify_ok: bool | None = None
+        if result.verification is not None and not result.verification.skipped:
+            verify_ok = result.verification.passed
+
+        # The user turn has to travel with the assistant's reply, otherwise the
+        # sample has no instruction to condition on.
+        user_turn = {"role": "user", "content": prompt}
+        try:
+            self.index.store.record_turn(
+                session_id=self.session_id,
+                prompt=prompt,
+                messages=redact_messages([user_turn, *messages]),
+                model_key=self._first_route.model_key if self._first_route else "",
+                verify_ok=verify_ok,
+                escalated=result.escalations > 0,
+                had_attachments=had_attachments,
+                repaired=self._rejected_attempt is not None,
+            )
+        except Exception as exc:  # noqa: BLE001 - capture is never load-bearing
+            log.warning("could not capture turn: %s", exc)
+
+    def _record_repair_pair(self, prompt: str, verification: VerificationResult) -> None:
+        """Store the failed attempt against the repair that passed."""
+        if not self._capture_enabled() or self._rejected_attempt is None:
+            return
+
+        chosen = self.messages[self._repair_start :]
+        if not chosen:
+            return
+
+        limit = self.config.training.max_context_messages
+        context = self.messages[: self._attempt_start][-limit:] if limit > 0 else []
+
+        try:
+            self.index.store.record_repair_pair(
+                session_id=self.session_id,
+                prompt=prompt,
+                context=redact_messages(context),
+                rejected=redact_messages(self._rejected_attempt),
+                chosen=redact_messages(chosen),
+                failure_output=verification.output,
+                verify_command=verification.command,
+            )
+        except Exception as exc:  # noqa: BLE001 - capture is never load-bearing
+            log.warning("could not capture repair pair: %s", exc)
 
     def _record_routing_outcome(self, prompt: str, result: AgentResult) -> None:
         """Turn what happened into a labelled exemplar for future routing.
@@ -333,6 +408,12 @@ class Agent:
             return verification
 
         self._verification_failed = True
+        # Snapshot the attempt the tests rejected, before repair edits history.
+        self._rejected_attempt = [dict(m) for m in self.messages[self._attempt_start :]]
+        # `verification` is rebound each round; the pair wants the failure that
+        # actually rejected the attempt above.
+        failed_verification = verification
+
         for attempt in range(1, self.config.agent.max_verify_retries + 1):
             self._emit("verify", f"failed (repair attempt {attempt})")
             self.messages.append(
@@ -344,6 +425,9 @@ class Agent:
                     ),
                 }
             )
+            # Start after the failure feedback: the repair itself is the
+            # preferred completion, not the message that prompted it.
+            self._repair_start = len(self.messages)
             # Repair always runs on the strongest tier: ground truth has already
             # said the cheap answer was wrong.
             repair_route = self.pool.router.route(
@@ -358,6 +442,9 @@ class Agent:
             )
             if verification.passed:
                 self._emit("verify", f"passed after {attempt} repair attempt(s)")
+                # A failed attempt and a passing repair: a preference pair
+                # labelled by execution rather than by anyone's opinion.
+                self._record_repair_pair(self._prompt, failed_verification)
                 return verification
 
         self._emit("verify", "still failing after all repair attempts")

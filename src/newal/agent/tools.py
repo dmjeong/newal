@@ -300,6 +300,14 @@ class Toolbox:
     ) -> ToolResult:
         env = dict(os.environ)
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        # Never let a cached .pyc answer for a file we just edited. CPython
+        # invalidates bytecode on (mtime seconds, source size), and this agent
+        # edits a file and re-runs the tests within the same second -- so a
+        # same-length fix like `a*b` -> `a+b` reuses the stale bytecode and the
+        # correct repair looks like a failure. That mislabels the turn, wastes
+        # the repair budget, and poisons both the routing set and the captured
+        # preference pairs. Recompiling costs milliseconds next to a test run.
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
         try:
             completed = subprocess.run(
                 command,

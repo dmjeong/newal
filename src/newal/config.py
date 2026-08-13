@@ -197,6 +197,21 @@ class MemoryConfig(BaseModel):
         return v
 
 
+class TrainingConfig(BaseModel):
+    """Capture of turns and repair pairs as fine-tuning material.
+
+    Local only -- nothing is uploaded anywhere. The captured turns contain the
+    source code discussed in the conversation, so the memory DB should be
+    treated as sensitive. Attachments are always redacted before storage.
+    """
+
+    enabled: bool = True
+    #: Skip capturing turns longer than this; a runaway loop is not useful data.
+    max_messages_per_turn: int = 80
+    #: Cap on stored context messages per DPO pair, counted from the end.
+    max_context_messages: int = 40
+
+
 class UIConfig(BaseModel):
     show_thinking: bool = False
     show_token_usage: bool = True
@@ -215,6 +230,7 @@ class Config(BaseModel):
     agent: AgentConfig = Field(default_factory=AgentConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     memory: MemoryConfig = Field(default_factory=MemoryConfig)
+    training: TrainingConfig = Field(default_factory=TrainingConfig)
     ui: UIConfig = Field(default_factory=UIConfig)
 
     @model_validator(mode="after")

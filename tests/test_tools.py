@@ -186,3 +186,34 @@ def test_malformed_arguments_are_reported_back(toolbox):
     result = toolbox.call("read_file", {"__parse_error__": "{broken"})
     assert result.is_error
     assert "not valid JSON" in result.content
+
+
+def test_execution_never_reuses_stale_bytecode(tmp_path):
+    """A same-length fix re-run immediately must not hit a cached .pyc.
+
+    CPython invalidates bytecode on (mtime seconds, source size), so an edit
+    like `a*b` -> `a+b` inside the same second is invisible to it. The verify
+    loop does exactly that, and a correct repair reported as a failure would
+    mislabel the turn and invert a captured preference pair.
+    """
+    (tmp_path / "mod.py").write_text("def add(a, b):\n    return a*b\n", encoding="utf-8")
+    (tmp_path / "check.py").write_text(
+        "import sys; sys.path.insert(0, '.')\n"
+        "from mod import add\n"
+        "sys.exit(0 if add(2, 3) == 5 else 1)\n",
+        encoding="utf-8",
+    )
+    box = Toolbox(ToolsConfig(workspace_root=str(tmp_path), shell_policy="allow"))
+
+    first = box.call("run_shell", {"command": "python3 check.py"})
+    assert first.is_error  # a*b == 6, as expected
+
+    # Same byte length, same second -- the exact shape that goes stale.
+    box.call(
+        "edit_file",
+        {"path": "mod.py", "old_text": "return a*b", "new_text": "return a+b"},
+    )
+    second = box.call("run_shell", {"command": "python3 check.py"})
+
+    assert not second.is_error, "stale bytecode made a correct fix look like a failure"
+    assert not list(tmp_path.rglob("__pycache__")), "bytecode should not be written"
