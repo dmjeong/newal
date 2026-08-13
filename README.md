@@ -24,7 +24,7 @@ VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and i
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev,video]"
-pytest -q                          # 199개 통과하면 설치 성공 (GPU/모델 불필요)
+pytest -q                          # 208개 통과하면 설치 성공 (GPU/모델 불필요)
 ```
 
 여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
@@ -512,7 +512,7 @@ cli.py                사용자 입력 받기, /명령 처리
 
 ### 테스트가 곧 명세입니다
 
-GPU 없이 199개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+GPU 없이 208개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
 
 | 테스트 | 대상 |
 |---|---|
@@ -525,6 +525,7 @@ GPU 없이 199개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금�
 | `test_budget.py` | 시각 토큰 예산 |
 | `test_transcript.py` | 세션 기록 + 첨부 리댁션 |
 | `test_training.py` | 학습 데이터 수집 + SFT/DPO 내보내기 |
+| `test_loop_markers.py` | 히스토리 트리밍 시 캡처 인덱스 |
 | `test_bm25.py` / `test_config.py` | 검색 / 설정 |
 
 VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
@@ -534,7 +535,7 @@ VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·
 ## 개발
 
 ```bash
-pytest -q                    # 199개 테스트 (GPU 불필요)
+pytest -q                    # 208개 테스트 (GPU 불필요)
 ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
 newal index                  # 저장소 색인만
 newal config                 # 병합된 설정 확인
@@ -556,7 +557,8 @@ src/newal/
 
 ### 버전 정책
 
-- **3.0** — 파인튜닝 데이터 수집 + `newal export` (현재)
+- **3.0.1** — 히스토리 트리밍이 캡처 인덱스를 어긋나게 하던 버그 수정 (현재)
+- **3.0** — 파인튜닝 데이터 수집 + `newal export`
 - **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정
 - **2.1** — VS Code 전환, `newal config` 추가, 검색 인터페이스 타입 정리
 - **2.0** — 학습된 자동 모델 선택

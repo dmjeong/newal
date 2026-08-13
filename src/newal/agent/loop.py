@@ -38,6 +38,24 @@ CONTEXT_SAFETY_MARGIN = 4096
 CHARS_PER_TOKEN = 3.5
 # Read-only tools the planning phase is allowed to touch.
 PLANNING_TOOLS = frozenset({"read_file", "list_dir", "grep", "search_memory"})
+# A capture marker whose message history-trimming already threw away. Capturing
+# from a lost marker would store a slice that is not the attempt it claims.
+MARKER_LOST = -1
+
+
+def _shift_marker(marker: int, dropped: int) -> int:
+    """Move a message-list marker to survive a front trim.
+
+    Trimming keeps the system message and drops ``dropped`` entries after it, so
+    original index ``i`` lands at ``i - dropped`` provided it was not one of the
+    dropped ones. If it was, the boundary no longer exists and the marker is
+    reported lost rather than silently clamped to some other message.
+    """
+    if marker <= MARKER_LOST:
+        return MARKER_LOST
+    if marker < 1 + dropped:
+        return MARKER_LOST
+    return marker - dropped
 
 
 @dataclass
@@ -206,6 +224,9 @@ class Agent:
         """Store the finished turn as fine-tuning material."""
         if not self._capture_enabled() or not prompt.strip():
             return
+        if self._attempt_start <= MARKER_LOST:
+            log.debug("turn boundary was trimmed away; skipping capture")
+            return
 
         messages = self.messages[self._attempt_start :]
         if not messages or len(messages) > self.config.training.max_messages_per_turn:
@@ -235,6 +256,9 @@ class Agent:
     def _record_repair_pair(self, prompt: str, verification: VerificationResult) -> None:
         """Store the failed attempt against the repair that passed."""
         if not self._capture_enabled() or self._rejected_attempt is None:
+            return
+        if self._attempt_start <= MARKER_LOST or self._repair_start <= MARKER_LOST:
+            log.debug("repair boundary was trimmed away; skipping capture")
             return
 
         chosen = self.messages[self._repair_start :]
@@ -409,7 +433,11 @@ class Agent:
 
         self._verification_failed = True
         # Snapshot the attempt the tests rejected, before repair edits history.
-        self._rejected_attempt = [dict(m) for m in self.messages[self._attempt_start :]]
+        self._rejected_attempt = (
+            [dict(m) for m in self.messages[self._attempt_start :]]
+            if self._attempt_start > MARKER_LOST
+            else None
+        )
         # `verification` is rebound each round; the pair wants the failure that
         # actually rejected the attempt above.
         failed_verification = verification
@@ -510,6 +538,7 @@ class Agent:
         if limit <= 0 or self._estimated_tokens() <= limit:
             return
 
+        before = len(self.messages)
         head, body = self.messages[:1], self.messages[1:]
         while len(body) > 4 and self._estimated_tokens() > limit:
             # Drop from the front, taking any tool messages that follow with it.
@@ -517,6 +546,15 @@ class Agent:
             while body and body[0].get("role") == "tool":
                 body.pop(0)
             self.messages = head + body
+
+        # The capture markers are absolute indices into self.messages, so
+        # dropping from the front moves everything they point at. Slide them by
+        # the same amount, or the captured slices describe the wrong messages
+        # and the preference pair silently records the wrong side.
+        dropped = before - len(self.messages)
+        if dropped:
+            self._attempt_start = _shift_marker(self._attempt_start, dropped)
+            self._repair_start = _shift_marker(self._repair_start, dropped)
 
         if self._estimated_tokens() > limit:
             self._emit(
