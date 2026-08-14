@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newal — 학습</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◆</text></svg>">
+</head>
+<body class="page">
+<header id="topbar">
+  <div class="brand">
+    <strong>newal</strong>
+    <span id="version" class="hint"></span>
+  </div>
+  <nav>
+    <a href="/">일반 사용</a>
+    <a href="/training" class="current">학습</a>
+  </nav>
+</header>
+
+<main class="doc">
+
+  <section>
+    <h2>수집된 데이터</h2>
+    <p class="hint">
+      라벨은 전부 이 저장소의 테스트를 실제로 돌린 결과입니다.
+      사람이 매긴 라벨도, LLM 심판도 쓰지 않습니다.
+    </p>
+    <div id="capture-warning" class="notice warn" hidden>
+      수집이 꺼져 있습니다. 일반 사용 화면의 설정에서 <b>학습 데이터 수집</b>을 켜세요.
+    </div>
+    <table id="counts" class="grid"><tbody></tbody></table>
+    <p class="hint mono wrap" id="db-path"></p>
+
+    <div class="row">
+      <a id="dl-sft" class="button" href="#">SFT 내려받기</a>
+      <a id="dl-dpo" class="button" href="#">DPO 내려받기</a>
+      <a id="dl-routing" class="button" href="#">라우팅 내려받기</a>
+      <button id="clear" type="button" class="danger">전부 삭제</button>
+    </div>
+    <p class="hint">
+      SFT는 <b>한 번에 통과한 턴</b>만 담습니다. 수리가 필요했던 턴은 실패한 시도가
+      대화에 남아 있어서, 학습시키면 틀린 뒤 고치는 습관을 배웁니다. 그런 턴은 DPO 쌍으로 나갑니다.
+    </p>
+  </section>
+
+  <section>
+    <h2>파인튜닝 파라미터</h2>
+    <div class="notice">
+      newal은 <b>준비까지만</b> 합니다. 학습은 GPU로 몇 시간 걸리는 작업이라
+      브라우저 요청 안에서 돌릴 일이 아닙니다. 여기서 데이터셋과
+      <b>바로 실행 가능한 스크립트</b>를 받아 터미널에서 실행하세요.
+    </div>
+
+    <form id="plan-form" class="form-grid">
+      <label>작업
+        <select name="task">
+          <option value="sft">SFT — 통과한 턴 따라하기</option>
+          <option value="dpo">DPO — 실패본 대신 수리본 선호하기</option>
+        </select>
+      </label>
+      <label>베이스 모델
+        <input name="base_model" list="model-options" spellcheck="false">
+        <datalist id="model-options"></datalist>
+      </label>
+      <label>방식
+        <select name="method">
+          <option value="qlora">QLoRA — 4bit, VRAM 최소</option>
+          <option value="lora">LoRA</option>
+          <option value="full">full — 전체 파라미터</option>
+        </select>
+      </label>
+      <label>출력 경로
+        <input name="output_dir" spellcheck="false">
+      </label>
+
+      <fieldset class="span">
+        <legend>LoRA</legend>
+        <div class="form-grid">
+          <label>r <input type="number" name="lora_r" min="1" max="256" step="1"></label>
+          <label>alpha <input type="number" name="lora_alpha" min="1" step="1"></label>
+          <label>dropout <input type="number" name="lora_dropout" min="0" max="0.9" step="any"></label>
+          <label class="span">target modules
+            <input name="target_modules" spellcheck="false">
+          </label>
+        </div>
+      </fieldset>
+
+      <fieldset class="span">
+        <legend>학습</legend>
+        <div class="form-grid">
+          <!-- Fractional fields use step="any": a numeric step makes the browser
+               reject any value that is not min + n*step, which silently blocks
+               submit for perfectly ordinary settings like 2e-4. -->
+          <label>learning rate <input type="number" name="learning_rate" min="0.000001" max="0.1" step="any"></label>
+          <label>epochs <input type="number" name="epochs" min="0.1" step="any"></label>
+          <label>batch size <input type="number" name="batch_size" min="1" step="1"></label>
+          <label>grad accum <input type="number" name="grad_accum" min="1" step="1"></label>
+          <label>max seq length <input type="number" name="max_seq_length" min="256" step="1"></label>
+          <label>warmup ratio <input type="number" name="warmup_ratio" min="0" max="0.5" step="any"></label>
+          <label id="beta-field">beta (DPO) <input type="number" name="beta" min="0.01" max="1" step="any"></label>
+        </div>
+      </fieldset>
+
+      <div class="row span">
+        <button type="submit">스크립트 생성</button>
+        <span id="effective" class="hint"></span>
+      </div>
+    </form>
+
+    <div id="plan-warnings"></div>
+  </section>
+
+  <section id="script-section" hidden>
+    <h2>생성된 스크립트</h2>
+    <div class="row">
+      <a id="dl-script" class="button" href="#" download>스크립트 내려받기</a>
+      <button id="copy-script" type="button" class="secondary">복사</button>
+      <span id="script-meta" class="hint"></span>
+    </div>
+    <pre id="script" class="mono"></pre>
+  </section>
+
+</main>
+<script src="/static/labels.js"></script>
+<script src="/static/training.js"></script>
+</body>
+</html>

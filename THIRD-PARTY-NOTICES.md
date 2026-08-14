@@ -77,6 +77,12 @@ metadata. Check them yourself before depending on them:
 The inference engines newal talks to — vLLM and SGLang — are installed
 separately by the user and are not dependencies of this package.
 
+The same goes for fine-tuning. The `/training` page writes out a script; it does
+not run one, and it does not import any of what that script needs. `trl`, `peft`,
+`bitsandbytes` and `datasets` appear as `import` lines inside generated text, so
+they are neither installed nor imported by newal. Whoever runs the script installs
+them and takes on their terms.
+
 ## Model weights
 
 Model weights are downloaded by the user at runtime and are **not** covered by

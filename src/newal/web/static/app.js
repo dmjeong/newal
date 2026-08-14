@@ -41,7 +41,7 @@ async function refreshState() {
   fillTable("usage", Object.entries(state.usage).map(([k, v]) => [k, v.toLocaleString()]));
   fillTable(
     "captured",
-    Object.entries(state.captured || {}).map(([k, v]) => [k.replace(/_/g, " "), v])
+    Object.entries(state.captured || {}).map(([k, v]) => [captureLabel(k), v])
   );
 
   const policy = { ask: "물어봄", allow: "자동 허용", deny: "차단" }[state.shell_policy];
@@ -347,3 +347,125 @@ $("reset").addEventListener("click", async () => {
 
 refreshState();
 setInterval(refreshState, 15000);
+
+// ---- settings --------------------------------------------------------------
+
+let settingsCache = [];
+
+async function openSettings() {
+  const response = await fetch("/api/settings");
+  if (!response.ok) return;
+  settingsCache = (await response.json()).settings;
+  renderSettings();
+  $("settings-status").textContent = "";
+  $("settings").showModal();
+}
+
+function renderSettings() {
+  const groups = new Map();
+  for (const setting of settingsCache) {
+    if (!groups.has(setting.group)) groups.set(setting.group, []);
+    groups.get(setting.group).push(setting);
+  }
+
+  $("settings-body").replaceChildren(
+    ...[...groups].map(([name, items]) => {
+      const section = document.createElement("div");
+      section.className = "setting-group";
+
+      const heading = document.createElement("h4");
+      heading.textContent = name;
+      section.append(heading);
+
+      for (const setting of items) section.append(settingRow(setting));
+      return section;
+    })
+  );
+}
+
+function settingRow(setting) {
+  const row = document.createElement("div");
+  row.className = "setting";
+
+  const name = document.createElement("div");
+  name.className = "name";
+  name.textContent = setting.label;
+  if (setting.sensitive) {
+    const flag = document.createElement("span");
+    flag.className = "flag";
+    flag.textContent = "주의";
+    name.append(flag);
+  }
+  row.append(name, control(setting));
+
+  if (setting.help) {
+    const help = document.createElement("div");
+    help.className = "help";
+    help.textContent = setting.help;
+    row.append(help);
+  }
+  return row;
+}
+
+function control(setting) {
+  if (setting.kind === "bool") {
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.checked = Boolean(setting.value);
+    box.dataset.path = setting.path;
+    return box;
+  }
+  if (setting.kind === "enum") {
+    const select = document.createElement("select");
+    select.dataset.path = setting.path;
+    for (const choice of setting.choices) {
+      const option = document.createElement("option");
+      option.value = choice;
+      option.textContent = choice;
+      option.selected = choice === setting.value;
+      select.append(option);
+    }
+    return select;
+  }
+  const number = document.createElement("input");
+  number.type = "number";
+  number.value = setting.value;
+  number.dataset.path = setting.path;
+  if (setting.minimum !== null) number.min = setting.minimum;
+  if (setting.maximum !== null) number.max = setting.maximum;
+  number.step = setting.step ?? (setting.kind === "int" ? 1 : "any");
+  return number;
+}
+
+async function saveSettings() {
+  const updates = {};
+  for (const field of $("settings-body").querySelectorAll("[data-path]")) {
+    updates[field.dataset.path] =
+      field.type === "checkbox" ? field.checked : field.value;
+  }
+
+  const response = await fetch("/api/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(updates),
+  });
+
+  const status = $("settings-status");
+  if (!response.ok) {
+    const detail = await response.json().catch(() => ({}));
+    status.textContent = detail.detail || `HTTP ${response.status}`;
+    return;
+  }
+
+  const result = await response.json();
+  settingsCache = result.settings;
+  const count = Object.keys(result.changed).length;
+  status.textContent = count
+    ? `${count}개 변경, ${result.saved_to} 에 저장했습니다.`
+    : "바뀐 항목이 없습니다.";
+  refreshState();
+}
+
+$("open-settings").addEventListener("click", openSettings);
+$("settings-save").addEventListener("click", saveSettings);
+$("settings-close").addEventListener("click", () => $("settings").close());

@@ -18,13 +18,16 @@ import uuid
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 from .. import __version__
 from ..config import Config
 from ..media import is_image_path, is_video_path
+from ..training import FORMATS, export
+from ..training.plan import TrainingPlan, render_script
+from . import settings as settings_module
 from .session import PendingAttachment, Session, build_session
 
 log = logging.getLogger(__name__)
@@ -244,6 +247,128 @@ def create_app(config: Config, *, autostart: bool = True) -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # ---- settings (normal mode) -----------------------------------------------
+
+    @app.get("/api/settings")
+    def read_settings() -> JSONResponse:
+        return JSONResponse({"settings": settings_module.describe(_session().config)})
+
+    @app.put("/api/settings")
+    async def write_settings(request: Request) -> JSONResponse:
+        session = _session()
+        if session.busy:
+            raise HTTPException(409, "a turn is still running")
+
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected a JSON object of path -> value")
+
+        result = settings_module.apply(session.config, payload)
+        if result.errors:
+            raise HTTPException(422, "; ".join(result.errors))
+
+        # The router caches thresholds taken at construction, so refresh the
+        # ones it holds rather than leaving the panel and the pool disagreeing.
+        router = session.pool.router
+        router.strategy = session.config.router.strategy
+        router.escalate_threshold = session.config.router.escalate_threshold
+        router.uncertainty_band = session.config.router.uncertainty_band
+        router.thinking_mode = session.config.router.thinking.mode
+        router.thinking_threshold = session.config.router.thinking.threshold
+
+        return JSONResponse(
+            {
+                "changed": result.changed,
+                "saved_to": result.saved_to,
+                "settings": settings_module.describe(session.config),
+            }
+        )
+
+    # ---- training mode --------------------------------------------------------
+
+    @app.get("/training")
+    def training_page() -> FileResponse:
+        return FileResponse(STATIC_DIR / "training.html")
+
+    @app.get("/api/training/summary")
+    def training_summary() -> JSONResponse:
+        session = _session()
+        if session.index is None:
+            raise HTTPException(409, "memory is disabled, so nothing is captured")
+
+        counts = session.index.store.training_counts()
+        pool = list(session.config.enabled_models(task="generate").items())
+        cheapest = min(pool, key=lambda item: item[1].tier)[1].id if pool else ""
+        return JSONResponse(
+            {
+                "counts": counts,
+                "capture_enabled": session.config.training.enabled,
+                "db_path": str(session.index.store.db_path),
+                "candidate_models": [spec.id for _, spec in sorted(pool, key=lambda i: i[1].tier)],
+                "suggested_base_model": cheapest,
+                "defaults": TrainingPlan().to_dict(),
+                "formats": list(FORMATS),
+            }
+        )
+
+    @app.get("/api/training/dataset/{fmt}")
+    def download_dataset(fmt: str, include_unverified: bool = False) -> FileResponse:
+        session = _session()
+        if session.index is None:
+            raise HTTPException(409, "memory is disabled, so nothing is captured")
+        if fmt not in FORMATS:
+            raise HTTPException(400, f"format must be one of {', '.join(FORMATS)}")
+
+        target = session.upload_dir.parent / "datasets" / f"{fmt}.jsonl"
+        written = export(
+            session.index.store, fmt, target, include_unverified=include_unverified
+        )
+        if written == 0:
+            raise HTTPException(404, f"no {fmt} samples captured yet")
+        return FileResponse(target, filename=f"newal-{fmt}.jsonl", media_type="application/jsonl")
+
+    @app.post("/api/training/plan")
+    async def build_plan(request: Request) -> JSONResponse:
+        session = _session()
+        payload = await request.json()
+        if not isinstance(payload, dict):
+            raise HTTPException(400, "expected a JSON object")
+
+        try:
+            plan = TrainingPlan.from_dict(payload)
+        except TypeError as exc:
+            raise HTTPException(400, str(exc)) from exc
+
+        errors = plan.validate()
+        if errors:
+            raise HTTPException(422, "; ".join(errors))
+
+        counts = session.index.store.training_counts() if session.index else {}
+        available = counts.get(
+            "turns_clean_first_try" if plan.task == "sft" else "repair_pairs", 0
+        )
+        dataset_name = f"newal-{plan.task}.jsonl"
+        return JSONResponse(
+            {
+                "plan": plan.to_dict(),
+                "warnings": plan.warnings(available),
+                "samples": available,
+                "dataset": dataset_name,
+                "script_name": f"train_{plan.task}.py",
+                "script": render_script(plan, dataset_name),
+            }
+        )
+
+    @app.post("/api/training/clear")
+    def clear_training() -> JSONResponse:
+        session = _session()
+        if session.index is None:
+            raise HTTPException(409, "memory is disabled")
+        if session.busy:
+            raise HTTPException(409, "a turn is still running")
+        session.index.store.clear_training_data()
+        return JSONResponse({"ok": True, "counts": session.index.store.training_counts()})
 
     # ---- static ---------------------------------------------------------------
 

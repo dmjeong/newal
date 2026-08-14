@@ -10,17 +10,19 @@ from __future__ import annotations
 
 import json
 import threading
+from html.parser import HTMLParser
 
 import pytest
 
 from newal.backends.base import Completion, ToolCall, Usage
 from newal.config import load_config
 from newal.models import Router
+from newal.training.plan import TrainingPlan
 
 fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
-from newal.web.app import create_app  # noqa: E402
+from newal.web.app import STATIC_DIR, create_app  # noqa: E402
 
 
 class _Backend:
@@ -76,10 +78,19 @@ def _client(tmp_path, monkeypatch, script, *, shell_policy="deny"):
             "ui": {"save_transcripts": False},
         },
     )
-    monkeypatch.setattr(
-        "newal.web.session.ModelPool", lambda cfg, **kw: _Pool(cfg, _Backend(script))
-    )
-    return TestClient(create_app(config, autostart=False))
+    pools: list[_Pool] = []
+
+    def _make_pool(cfg, **_kwargs):
+        pool = _Pool(cfg, _Backend(script))
+        pools.append(pool)
+        return pool
+
+    monkeypatch.setattr("newal.web.session.ModelPool", _make_pool)
+    client = TestClient(create_app(config, autostart=False))
+    # The session lives in a closure, so hand the pool out here for the few
+    # tests that have to look at the live router rather than at a response.
+    client.pools = pools
+    return client
 
 
 def _events(response) -> list[dict]:
@@ -294,3 +305,176 @@ def test_shell_stays_blocked_when_the_policy_says_deny(tmp_path, monkeypatch):
     events = _events(response)
     assert not any(e["kind"] == "approval" for e in events)
     assert events[-1]["kind"] == "end"
+
+
+# ---- settings (normal mode) --------------------------------------------------
+
+
+def test_settings_are_listed_with_current_values(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        items = client.get("/api/settings").json()["settings"]
+
+    paths = {item["path"] for item in items}
+    assert "router.mode" in paths
+    assert "tools.shell_policy" in paths
+    # Startup-only config must not be offered.
+    assert not any(p.startswith("models") for p in paths)
+
+
+def test_saving_settings_applies_and_persists(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        response = client.put("/api/settings", json={"router.mode": "heuristic"})
+        assert response.status_code == 200
+        assert response.json()["changed"] == {"router.mode": "heuristic"}
+
+        state_after = client.get("/api/state").json()
+        assert state_after["router"]["mode"] == "heuristic"
+
+    assert (tmp_path / "configs" / "local.yaml").is_file()
+
+
+def test_saving_a_bad_setting_is_a_422(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        response = client.put("/api/settings", json={"router.mode": "telepathy"})
+    assert response.status_code == 422
+
+
+def test_threshold_changes_reach_the_live_router(tmp_path, monkeypatch):
+    """The router copies thresholds at construction, so saving has to refresh them."""
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        router = client.pools[0].router
+        assert router.escalate_threshold != 0.9, "pick a value the default is not"
+
+        assert client.put(
+            "/api/settings", json={"router.escalate_threshold": 0.9}
+        ).status_code == 200
+        assert router.escalate_threshold == 0.9
+
+
+def test_the_save_response_carries_the_new_values(tmp_path, monkeypatch):
+    """The panel redraws from this response, so it has to be the post-save state."""
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        body = client.put("/api/settings", json={"agent.max_steps": 9}).json()
+
+    items = {item["path"]: item["value"] for item in body["settings"]}
+    assert items["agent.max_steps"] == 9
+
+
+# ---- training mode -----------------------------------------------------------
+
+
+def test_training_page_is_a_separate_address(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        page = client.get("/training")
+    assert page.status_code == 200
+    assert "/static/training.js" in page.text
+    # It is a different page, not the chat UI with a tab.
+    assert "id=\"composer\"" not in page.text
+
+
+def test_both_pages_load_the_shared_labels(tmp_path, monkeypatch):
+    """captureLabel() is a plain global, so a missing tag is a runtime error."""
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        for path in ("/", "/training"):
+            assert "/static/labels.js" in client.get(path).text, path
+        counts = client.get("/api/training/summary").json()["counts"]
+
+    labels = (STATIC_DIR / "labels.js").read_text(encoding="utf-8")
+    for key in counts:
+        assert f"{key}:" in labels, f"{key} would fall back to its raw column name"
+
+
+def test_training_summary_reports_counts_and_candidates(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        summary = client.get("/api/training/summary").json()
+
+    assert "turns_clean_first_try" in summary["counts"]
+    assert summary["candidate_models"]
+    assert summary["suggested_base_model"]
+    assert summary["defaults"]["task"] == "sft"
+
+
+def test_a_plan_returns_a_script_and_advice(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        response = client.post(
+            "/api/training/plan",
+            json={"task": "dpo", "base_model": "Qwen/Qwen3.5-4B", "lora_r": 16},
+        )
+
+    body = response.json()
+    assert response.status_code == 200
+    assert "DPOTrainer" in body["script"]
+    assert body["script_name"] == "train_dpo.py"
+    # No data captured in this fixture, so it must say so rather than pretend.
+    assert any("0개" in note for note in body["warnings"])
+
+
+def test_an_invalid_plan_is_a_422(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        response = client.post("/api/training/plan", json={"lora_r": 0})
+    assert response.status_code == 422
+
+
+def test_downloading_an_empty_dataset_is_a_404_not_an_empty_file(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        assert client.get("/api/training/dataset/sft").status_code == 404
+
+
+def test_an_unknown_dataset_format_is_rejected(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        assert client.get("/api/training/dataset/grpo").status_code == 400
+
+
+def _number_inputs() -> dict[str, dict[str, str]]:
+    """Pull the <input type=number> constraints out of the training form."""
+
+    class Reader(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.fields: dict[str, dict[str, str]] = {}
+
+        def handle_starttag(self, tag, attrs):
+            attributes = dict(attrs)
+            if tag == "input" and attributes.get("type") == "number":
+                self.fields[attributes["name"]] = attributes
+
+    reader = Reader()
+    reader.feed((STATIC_DIR / "training.html").read_text(encoding="utf-8"))
+    return reader.fields
+
+
+def test_every_number_field_accepts_its_own_default():
+    """A browser refuses to submit a form whose value violates min/max/step.
+
+    It does so silently as far as the page is concerned, so a mismatch between
+    the HTML constraints and the defaults the server hands back would leave the
+    'generate' button doing nothing at all.
+    """
+    defaults = TrainingPlan().to_dict()
+
+    for name, attributes in _number_inputs().items():
+        value = defaults[name]
+        if "min" in attributes:
+            assert value >= float(attributes["min"]), f"{name}: default is below min"
+        if "max" in attributes:
+            assert value <= float(attributes["max"]), f"{name}: default is above max"
+
+        step = attributes.get("step", "1")
+        if step == "any":
+            continue
+        # HTML counts steps from min (or 0), so the value has to land on one.
+        base = float(attributes.get("min", 0))
+        offset = (value - base) / float(step)
+        assert abs(offset - round(offset)) < 1e-9, (
+            f"{name}: default {value} is not a whole step from {base}; "
+            f'use step="any" for fractional fields'
+        )
+
+
+def test_captured_data_can_be_cleared(tmp_path, monkeypatch):
+    with _client(tmp_path, monkeypatch, _reply()) as client:
+        client.post("/api/chat", data={"message": "첫 질문"})
+        response = client.post("/api/training/clear")
+
+    assert response.status_code == 200
+    assert response.json()["counts"]["turns"] == 0

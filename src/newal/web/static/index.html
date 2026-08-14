@@ -15,6 +15,11 @@
       <span id="version"></span>
     </header>
 
+    <nav class="modes">
+      <a href="/" class="current">일반 사용</a>
+      <a href="/training">학습</a>
+    </nav>
+
     <section>
       <h2>워크스페이스</h2>
       <p id="workspace" class="mono wrap">…</p>
@@ -41,6 +46,7 @@
     </section>
 
     <footer>
+      <button id="open-settings" type="button">설정</button>
       <button id="reset" type="button">대화 초기화</button>
       <p id="shell-policy" class="hint"></p>
     </footer>
@@ -66,6 +72,20 @@
   </main>
 </div>
 
+<dialog id="settings">
+  <h3>설정</h3>
+  <p class="hint">
+    바꾸면 바로 적용되고 <code>configs/local.yaml</code>에 저장됩니다.
+    모델 풀과 포트는 시작할 때 읽으므로 여기서는 바꿀 수 없습니다.
+  </p>
+  <div id="settings-body"></div>
+  <p id="settings-status" class="hint"></p>
+  <menu>
+    <button id="settings-close" type="button" class="secondary">닫기</button>
+    <button id="settings-save" type="button">저장</button>
+  </menu>
+</dialog>
+
 <dialog id="approval">
   <h3>셸 명령 실행 요청</h3>
   <pre id="approval-detail" class="mono"></pre>
@@ -76,6 +96,7 @@
   </menu>
 </dialog>
 
+<script src="/static/labels.js"></script>
 <script src="/static/app.js"></script>
 </body>
 </html>
