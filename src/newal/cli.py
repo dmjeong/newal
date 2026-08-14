@@ -456,6 +456,57 @@ def config(
         console.print(f"[dim]enabled pool members: {pool}[/]")
 
 
+@app.command()
+def web(
+    config_path: Path = typer.Option(None, "--config", "-c"),
+    workspace: Path = typer.Option(None, "--workspace", "-w", help="Workspace root."),
+    host: str = typer.Option("127.0.0.1", "--host", help="Bind address."),
+    port: int = typer.Option(8800, "--port", "-p"),
+    no_autostart: bool = typer.Option(
+        False, "--no-autostart", help="Do not launch an inference server."
+    ),
+    no_browser: bool = typer.Option(False, "--no-browser", help="Do not open a browser."),
+    verbose: bool = typer.Option(False, "--verbose", "-v"),
+) -> None:
+    """Serve the browser UI."""
+    _configure_logging(verbose)
+
+    overrides: dict[str, Any] = {}
+    if workspace:
+        overrides["tools"] = {"workspace_root": str(workspace)}
+    config = load_config(config_path, overrides=overrides)
+
+    from .web.server import WebUnavailable, serve
+
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        # The agent edits files and, under shell_policy, runs commands. Nothing
+        # here authenticates, so a non-loopback bind hands that to the network.
+        console.print(
+            Panel(
+                f"[bold]{host}[/] 로 바인딩합니다. 이 UI에는 인증이 없고,\n"
+                f"접근할 수 있는 사람은 워크스페이스 파일 수정과\n"
+                f"셸 실행(shell_policy={config.tools.shell_policy})을 그대로 물려받습니다.",
+                title="[bold red]경고[/]",
+                border_style="red",
+            )
+        )
+
+    console.print(f"[cyan]http://localhost:{port}[/] 에서 실행합니다. Ctrl-C로 종료.")
+    try:
+        serve(
+            config,
+            host=host,
+            port=port,
+            autostart=not no_autostart,
+            open_browser=not no_browser,
+        )
+    except WebUnavailable as exc:
+        console.print(f"[bold red]{exc}[/]")
+        raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt:
+        pass
+
+
 @app.command(name="export")
 def export_data(
     fmt: str = typer.Option(

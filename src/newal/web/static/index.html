@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>newal</title>
+<link rel="stylesheet" href="/static/style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>◆</text></svg>">
+</head>
+<body>
+<div id="app">
+  <aside id="sidebar">
+    <header>
+      <h1>newal</h1>
+      <span id="version"></span>
+    </header>
+
+    <section>
+      <h2>워크스페이스</h2>
+      <p id="workspace" class="mono wrap">…</p>
+    </section>
+
+    <section>
+      <h2>모델 풀</h2>
+      <ul id="models" class="mono"></ul>
+    </section>
+
+    <section>
+      <h2>라우팅</h2>
+      <p id="routing" class="mono"></p>
+    </section>
+
+    <section>
+      <h2>토큰 사용량</h2>
+      <table id="usage"><tbody></tbody></table>
+    </section>
+
+    <section>
+      <h2>수집된 학습 데이터</h2>
+      <table id="captured"><tbody></tbody></table>
+    </section>
+
+    <footer>
+      <button id="reset" type="button">대화 초기화</button>
+      <p id="shell-policy" class="hint"></p>
+    </footer>
+  </aside>
+
+  <main>
+    <div id="messages" aria-live="polite"></div>
+
+    <div id="composer">
+      <div id="attachments" hidden></div>
+      <div id="drop-hint" hidden>여기에 이미지나 동영상을 놓으세요</div>
+      <form id="form">
+        <textarea id="input" rows="1" placeholder="무엇을 도와드릴까요?  (Shift+Enter 줄바꿈, 파일은 드래그앤드롭)" autofocus></textarea>
+        <div class="controls">
+          <label class="file-button">
+            첨부
+            <input type="file" id="file" accept="image/*,video/*" multiple hidden>
+          </label>
+          <button id="send" type="submit">보내기</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</div>
+
+<dialog id="approval">
+  <h3>셸 명령 실행 요청</h3>
+  <pre id="approval-detail" class="mono"></pre>
+  <p class="hint">이 명령은 워크스페이스 안에서 실행됩니다.</p>
+  <menu>
+    <button id="deny" type="button" class="secondary">거부</button>
+    <button id="allow" type="button">허용</button>
+  </menu>
+</dialog>
+
+<script src="/static/app.js"></script>
+</body>
+</html>

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "newal"
-version = "3.0.2"
+version = "4.0.0"
 description = "Local multimodal coding assistant powered by a pool of Qwen models (text + image + video)"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,8 @@ dependencies = [
 video = ["opencv-python-headless>=4.9"]
 # Dense retrieval on top of the built-in BM25. Optional: BM25 alone works fine.
 dense = ["sentence-transformers>=3.0"]
+# Browser UI. Plain HTML/JS served from the package -- no Node, no bundler.
+web = ["fastapi>=0.110", "uvicorn>=0.29", "python-multipart>=0.0.9"]
 # In-process inference without a separate server (slow, but no vLLM needed).
 transformers = ["transformers>=4.57", "torch>=2.4", "accelerate>=0.33"]
 dev = ["pytest>=8.2", "pytest-asyncio>=0.23"]
@@ -40,7 +42,7 @@ where = ["src"]
 
 [tool.setuptools.package-data]
 # The shipped defaults must travel with the package, not with the repo.
-newal = ["data/*.yaml"]
+newal = ["data/*.yaml", "web/static/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -63,5 +65,8 @@ ignore = [
 # typer.Option() in a default is the documented Typer idiom, not a mutable
 # default-argument bug.
 "src/newal/cli.py" = ["B008"]
+# Same for FastAPI: File()/Form() in a default is how the framework declares
+# request parsing, not a mutable default.
+"src/newal/web/app.py" = ["B008"]
 # Tests use fixtures and stand-ins where a few of these rules fight clarity.
 "tests/*" = ["B011", "SIM117"]

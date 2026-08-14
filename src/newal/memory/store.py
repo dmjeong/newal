@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import time
 from contextlib import closing
 from dataclasses import dataclass
@@ -136,7 +137,20 @@ class MemoryStore:
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
-        self._conn = sqlite3.connect(str(self.db_path))
+        # The web front end runs a turn on a worker thread while the request
+        # handler reads state on another, so one connection is shared. That is
+        # safe here: sqlite3.threadsafety == 3 (serialized) means the library
+        # serialises access itself. What it does not protect is a multi
+        # statement transaction interleaving with another thread's, so every
+        # `with self._conn` block below also takes _lock.
+        if sqlite3.threadsafety < 3:  # pragma: no cover - depends on the build
+            log.warning(
+                "sqlite3 is not in serialized mode (threadsafety=%s); "
+                "concurrent access may fail",
+                sqlite3.threadsafety,
+            )
+        self._lock = threading.RLock()
+        self._conn = sqlite3.connect(str(self.db_path), check_same_thread=False)
         self._conn.row_factory = sqlite3.Row
         # WAL so an indexing pass and a read from the agent loop do not block.
         self._conn.execute("PRAGMA journal_mode=WAL")
@@ -152,13 +166,13 @@ class MemoryStore:
             return
         if found != 0:
             log.info("memory schema %s -> %s; rebuilding index", found, SCHEMA_VERSION)
-            with self._conn:
+            with self._lock, self._conn:
                 # Notes are user data and deliberately untouched.
                 self._conn.execute("DROP TABLE IF EXISTS chunks")
                 self._conn.execute("DROP TABLE IF EXISTS files")
             with closing(self._conn.cursor()) as cursor:
                 cursor.executescript(SCHEMA)
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
 
     def close(self) -> None:
@@ -183,7 +197,7 @@ class MemoryStore:
 
     def replace_file(self, path: str, mtime: float, size: int, chunks: list[Chunk]) -> None:
         """Atomically swap in a file's chunks."""
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM chunks WHERE path = ?", (path,))
             self._conn.executemany(
                 "INSERT OR REPLACE INTO chunks "
@@ -211,7 +225,7 @@ class MemoryStore:
         """Attach embeddings to chunks that were indexed without them."""
         if not vectors:
             return
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.executemany(
                 "UPDATE chunks SET embedding = ? WHERE id = ?",
                 [(pack_embedding(vec), chunk_id) for chunk_id, vec in vectors.items()],
@@ -245,7 +259,7 @@ class MemoryStore:
         ]
 
     def forget_file(self, path: str) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM chunks WHERE path = ?", (path,))
             self._conn.execute("DELETE FROM files WHERE path = ?", (path,))
 
@@ -282,7 +296,7 @@ class MemoryStore:
     # ---- durable notes --------------------------------------------------------
 
     def add_note(self, topic: str, content: str) -> int:
-        with self._conn:
+        with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO notes (topic, content, created_at) VALUES (?, ?, ?)",
                 (topic, content, time.time()),
@@ -306,7 +320,7 @@ class MemoryStore:
         return [Note(**dict(row)) for row in rows]
 
     def clear_notes(self) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM notes")
 
     # ---- routing outcomes -----------------------------------------------------
@@ -321,7 +335,7 @@ class MemoryStore:
         verify_ok: bool | None,
     ) -> int:
         """Store one observed routing outcome as a future training exemplar."""
-        with self._conn:
+        with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO route_outcomes "
                 "(prompt, label, model_key, escalated, verify_ok, created_at) "
@@ -356,7 +370,7 @@ class MemoryStore:
         return {row["label"]: int(row["n"]) for row in rows}
 
     def clear_route_outcomes(self) -> None:
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM route_outcomes")
 
     # ---- captured training data -----------------------------------------------
@@ -374,7 +388,7 @@ class MemoryStore:
         repaired: bool = False,
     ) -> int:
         """Store one completed turn. ``messages`` must already be redacted."""
-        with self._conn:
+        with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO turns (session_id, prompt, messages, model_key, "
                 "verify_ok, escalated, repaired, had_attachments, created_at) "
@@ -405,7 +419,7 @@ class MemoryStore:
         verify_command: str | None,
     ) -> int:
         """Store a rejected/chosen pair. All message lists must be redacted."""
-        with self._conn:
+        with self._lock, self._conn:
             cursor = self._conn.execute(
                 "INSERT INTO repair_pairs (session_id, prompt, context, rejected, "
                 "chosen, failure_output, verify_command, created_at) "
@@ -479,6 +493,6 @@ class MemoryStore:
 
     def clear_training_data(self) -> None:
         """Delete every captured turn and repair pair. Notes are kept."""
-        with self._conn:
+        with self._lock, self._conn:
             self._conn.execute("DELETE FROM turns")
             self._conn.execute("DELETE FROM repair_pairs")

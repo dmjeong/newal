@@ -4,7 +4,7 @@
 
 Python · VS Code · 완전 오프라인 · 사용량 제한 없음 · 무료.
 
-**v3.0** — 매일 쓰면 그게 곧 **파인튜닝 데이터**가 됩니다. 라벨은 테스트 실행 결과에서 나옵니다.
+**v4.0** — 브라우저 UI 추가. `newal web` 하나면 됩니다. 빌드 스텝도 Node도 없습니다.
 
 ---
 
@@ -16,7 +16,16 @@ code .                        # VS Code로 열기
 ```
 
 VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and install`**
-하나만 누르면 가상환경 생성 + 설치가 끝납니다. 그다음 **F5 → `newal: chat`**.
+하나만 누르면 가상환경 생성 + 설치가 끝납니다.
+
+**브라우저 UI로 쓰려면:**
+
+```bash
+pip install -e ".[web]"
+newal web                          # 브라우저가 자동으로 열립니다
+```
+
+터미널이 편하면 **F5 → `newal: chat`**.
 
 터미널로 하려면:
 
@@ -24,7 +33,7 @@ VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and i
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -e ".[dev,video]"
-pytest -q                          # 208개 통과하면 설치 성공 (GPU/모델 불필요)
+pytest -q                          # 226개 통과하면 설치 성공 (GPU/모델 불필요)
 ```
 
 여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
@@ -302,6 +311,33 @@ newal config -s router  # 한 섹션만
 
 ---
 
+## 브라우저 UI
+
+```bash
+newal web                    # http://localhost:8800, 브라우저 자동 실행
+newal web --port 9000
+newal web --no-browser
+```
+
+**빌드 스텝이 없습니다.** UI는 패키지에 동봉된 순수 HTML/CSS/JS라 npm도 Node도
+필요 없습니다. `pip install`이 전부입니다.
+
+- 스트리밍은 SSE. 계획·라우팅·도구 호출·검증이 진행되는 대로 보입니다
+- 이미지·동영상은 **드래그앤드롭**
+- `shell_policy: ask`면 셸 실행 전에 다이얼로그로 물어봅니다. 탭을 닫거나
+  Esc를 누르면 **거부**로 처리됩니다
+- 사이드바에 모델 풀, 라우팅 상태, 토큰 사용량, 수집된 학습 데이터
+- 다크 모드는 OS 설정을 따릅니다
+
+> **기본은 127.0.0.1 바인딩입니다.** 이 UI에는 인증이 없고, 에이전트는 파일을
+> 수정하며 `shell_policy`에 따라 명령도 실행합니다. `--host`로 외부에 열면
+> 접근 가능한 사람이 그 권한을 그대로 가집니다.
+
+윈도우 응용프로그램은 만들 필요가 없습니다. 나중에 네이티브 창이 필요해지면
+같은 UI를 pywebview로 감싸면 됩니다.
+
+---
+
 ## 사용법
 
 ```
@@ -517,7 +553,7 @@ cli.py                사용자 입력 받기, /명령 처리
 
 ### 테스트가 곧 명세입니다
 
-GPU 없이 208개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+GPU 없이 226개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
 
 | 테스트 | 대상 |
 |---|---|
@@ -531,6 +567,7 @@ GPU 없이 208개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금�
 | `test_transcript.py` | 세션 기록 + 첨부 리댁션 |
 | `test_training.py` | 학습 데이터 수집 + SFT/DPO 내보내기 |
 | `test_loop_markers.py` | 히스토리 트리밍 시 캡처 인덱스 |
+| `test_web.py` | HTTP 전송 · 업로드 차단 · 승인 왕복 |
 | `test_bm25.py` / `test_config.py` | 검색 / 설정 |
 
 VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
@@ -540,7 +577,7 @@ VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·
 ## 개발
 
 ```bash
-pytest -q                    # 208개 테스트 (GPU 불필요)
+pytest -q                    # 226개 테스트 (GPU 불필요)
 ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
 newal index                  # 저장소 색인만
 newal config                 # 병합된 설정 확인
@@ -552,6 +589,7 @@ src/newal/
 ├─ config.py          설정 로딩 (YAML 4계층 + 환경변수)
 ├─ data/default.yaml  기본 설정 (패키지에 동봉)
 ├─ cli.py             대화형 터미널
+├─ web/               브라우저 UI (FastAPI + 순수 HTML/JS, 빌드 없음)
 ├─ models/            모델 풀 · 라우터 · 분류기 · 임베딩/재정렬
 ├─ backends/          vLLM/SGLang 클라이언트 · 서버 기동 · transformers 폴백
 ├─ media/             이미지/동영상 → 콘텐츠 파트, 시각 토큰 예산
@@ -563,7 +601,8 @@ src/newal/
 
 ### 버전 정책
 
-- **3.0.2** — LICENSE 추가, `pip install`로 설치하면 기동 못 하던 버그 수정 (현재)
+- **4.0** — 브라우저 UI (현재)
+- **3.0.2** — LICENSE 추가, `pip install`로 설치하면 기동 못 하던 버그 수정
 - **3.0.1** — 히스토리 트리밍이 캡처 인덱스를 어긋나게 하던 버그 수정
 - **3.0** — 파인튜닝 데이터 수집 + `newal export`
 - **2.1.1** — `ui.transcript_dir`이 선언만 되고 동작하지 않던 버그 수정

@@ -32,8 +32,16 @@ newal points it at a local vLLM or SGLang server; no OpenAI service is involved.
 | Extra | Package | Version | License |
 |---|---|---|---|
 | `video` | opencv-python-headless | 5.0.0.93 | Apache-2.0 (OpenCV) |
+| `web` | fastapi | 0.141.1 | MIT |
+| `web` | uvicorn | 0.52.3 | BSD-3-Clause |
+| `web` | python-multipart | 0.0.32 | Apache-2.0 |
+| `web` | starlette (via fastapi) | 1.6.0 | BSD-3-Clause |
 | `dev` | pytest | 9.1.1 | MIT |
 | `dev` | ruff | 0.16.2 | MIT |
+
+The `web` extra ships no JavaScript dependencies at all: the interface is plain
+HTML, CSS and JS served from the package, so there is no bundler, no lockfile,
+and nothing vendored from npm.
 
 ### A note on the `video` extra
 
