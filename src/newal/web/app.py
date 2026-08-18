@@ -83,6 +83,10 @@ def create_app(config: Config, *, autostart: bool = True) -> FastAPI:
                 "version": __version__,
                 "workspace": str(session.config.workspace_path()),
                 "models": session.pool.describe(),
+                # Empty in the normal case. Populated when a member's server was
+                # not reachable at startup, so the page can say so instead of
+                # letting the user find out by sending a message.
+                "unavailable": session.pool.unavailable,
                 "router": {
                     "strategy": session.config.router.strategy,
                     "mode": session.config.router.mode,

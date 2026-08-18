@@ -26,13 +26,31 @@ async function refreshState() {
   $("version").textContent = "v" + state.version;
   $("workspace").textContent = state.workspace;
 
+  const down = state.unavailable || {};
   $("models").replaceChildren(
     ...state.models.map((line) => {
       const li = document.createElement("li");
       li.textContent = line;
+      // The pool starts without a member whose server is unreachable, so mark
+      // it here rather than letting the first message be the discovery.
+      const key = line.split(":")[0];
+      if (key in down) {
+        li.classList.add("down");
+        li.title = down[key];
+        li.textContent += "  (서버 없음)";
+      }
       return li;
     })
   );
+
+  const banner = $("model-warning");
+  const missing = Object.keys(down);
+  banner.hidden = missing.length === 0;
+  if (missing.length) {
+    banner.textContent =
+      `${missing.join(", ")} 모델 서버에 연결하지 못했습니다. ` +
+      "설정과 학습 모드는 그대로 쓸 수 있지만 대화는 답하지 못합니다.";
+  }
 
   $("routing").textContent =
     `${state.router.strategy} · ${state.router.mode}` +

@@ -1,15 +1,79 @@
 {
-  // Run these from the Run and Debug panel (Ctrl+Shift+D), or press F5.
+  // F5 runs the FIRST configuration below, so the browser UI is first.
+  //
+  //   newal: web (browser UI)             starts a model server, then opens
+  //                                       http://localhost:8800 -- needs a GPU
+  //   newal: web without starting servers  the UI alone. No GPU, no model. The
+  //                                       page loads and every screen works
+  //                                       except actually answering a turn.
+  //
+  // Run "setup: create venv and install" once first (Ctrl+Shift+P -> Tasks:
+  // Run Task); the web UI needs the fastapi/uvicorn that task installs.
+  //
   // PYTHONPATH is set so the src/ layout imports work even before
   // `pip install -e .` has been run.
+
   "version": "0.2.0",
   "configurations": [
+    {
+      "name": "newal: web (browser UI)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": [
+        "web"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: web without starting servers",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": [
+        "web",
+        "--no-autostart"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
+    {
+      "name": "newal: web (verbose, no browser)",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "newal",
+      "args": [
+        "web",
+        "--verbose",
+        "--no-browser"
+      ],
+      "console": "integratedTerminal",
+      "cwd": "${workspaceFolder}",
+      "justMyCode": false,
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src",
+        "PYTHONUNBUFFERED": "1"
+      }
+    },
     {
       "name": "newal: chat (interactive)",
       "type": "debugpy",
       "request": "launch",
       "module": "newal",
-      "args": ["chat"],
+      "args": [
+        "chat"
+      ],
       // integratedTerminal is required: the chat loop reads from stdin.
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
@@ -24,7 +88,12 @@
       "type": "debugpy",
       "request": "launch",
       "module": "newal",
-      "args": ["chat", "--verbose", "--workspace", "${workspaceFolder}"],
+      "args": [
+        "chat",
+        "--verbose",
+        "--workspace",
+        "${workspaceFolder}"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
@@ -38,7 +107,10 @@
       "type": "debugpy",
       "request": "launch",
       "module": "newal",
-      "args": ["chat", "--no-autostart"],
+      "args": [
+        "chat",
+        "--no-autostart"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
@@ -52,7 +124,10 @@
       "type": "debugpy",
       "request": "launch",
       "module": "newal",
-      "args": ["serve", "--verbose"],
+      "args": [
+        "serve",
+        "--verbose"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
@@ -66,7 +141,9 @@
       "type": "debugpy",
       "request": "launch",
       "module": "newal",
-      "args": ["index"],
+      "args": [
+        "index"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
@@ -80,22 +157,31 @@
       "type": "debugpy",
       "request": "launch",
       "module": "pytest",
-      "args": ["-q"],
+      "args": [
+        "-q"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
-      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
     },
     {
       "name": "newal: run the open test file",
       "type": "debugpy",
       "request": "launch",
       "module": "pytest",
-      "args": ["-v", "${file}"],
+      "args": [
+        "-v",
+        "${file}"
+      ],
       "console": "integratedTerminal",
       "cwd": "${workspaceFolder}",
       "justMyCode": false,
-      "env": { "PYTHONPATH": "${workspaceFolder}/src" }
+      "env": {
+        "PYTHONPATH": "${workspaceFolder}/src"
+      }
     }
   ]
 }

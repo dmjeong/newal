@@ -5,11 +5,11 @@
   "tasks": [
     {
       "label": "setup: create venv and install",
-      "detail": "One-time setup on a fresh clone. Creates .venv and installs newal in editable mode.",
+      "detail": "One-time setup on a fresh clone. Creates .venv and installs newal (including the browser UI) in editable mode.",
       "type": "shell",
-      "command": "python -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev,video]'",
+      "command": "python -m venv .venv && .venv/bin/python -m pip install --upgrade pip && .venv/bin/python -m pip install -e '.[dev,video,web]'",
       "windows": {
-        "command": "python -m venv .venv; .venv\\Scripts\\python.exe -m pip install --upgrade pip; .venv\\Scripts\\python.exe -m pip install -e '.[dev,video]'"
+        "command": "python -m venv .venv; .venv\\Scripts\\python.exe -m pip install --upgrade pip; .venv\\Scripts\\python.exe -m pip install -e '.[dev,video,web]'"
       },
       "problemMatcher": [],
       "group": "build"
@@ -20,6 +20,22 @@
       "type": "shell",
       "command": ".venv/bin/python -m pip install vllm",
       "windows": { "command": ".venv\\Scripts\\python.exe -m pip install vllm" },
+      "problemMatcher": []
+    },
+    {
+      "label": "run the browser UI",
+      "detail": "Serve http://localhost:8800 and open a browser. Same thing F5 does.",
+      "type": "shell",
+      "command": ".venv/bin/python -m newal web",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m newal web" },
+      "problemMatcher": []
+    },
+    {
+      "label": "run the browser UI without a model",
+      "detail": "The UI alone, no GPU and no inference server. Pages load; a turn will not answer.",
+      "type": "shell",
+      "command": ".venv/bin/python -m newal web --no-autostart",
+      "windows": { "command": ".venv\\Scripts\\python.exe -m newal web --no-autostart" },
       "problemMatcher": []
     },
     {

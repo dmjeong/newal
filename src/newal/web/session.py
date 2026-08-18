@@ -134,7 +134,10 @@ def build_session(config: Config, *, autostart: bool = True) -> Session:
     root = config.workspace_path()
     config.runtime.autostart = autostart
 
-    pool = ModelPool(config)
+    # The browser UI has to come up even with no model reachable: the pages,
+    # the settings panel and the whole training mode need nothing from a pool.
+    # A missing model becomes an error on the turn that needs one.
+    pool = ModelPool(config, tolerate_unavailable=True)
 
     index: RepoIndex | None = None
     if config.memory.enabled:

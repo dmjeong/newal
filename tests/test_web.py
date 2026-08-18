@@ -46,6 +46,7 @@ class _Pool:
         generators = config.enabled_models(task="generate")
         self.router = Router(tiers=[(k, v.tier) for k, v in generators.items()])
         self._backend = backend
+        self.unavailable: dict[str, str] = {}
 
     def for_route(self, route):
         return self._backend
@@ -305,6 +306,30 @@ def test_shell_stays_blocked_when_the_policy_says_deny(tmp_path, monkeypatch):
     events = _events(response)
     assert not any(e["kind"] == "approval" for e in events)
     assert events[-1]["kind"] == "end"
+
+
+def test_the_ui_serves_with_no_model_reachable(tmp_path, monkeypatch):
+    """F5 with no GPU has to reach the page, not a stack trace in the terminal.
+
+    Nothing on either page needs a model except answering a turn, so a pool
+    that cannot reach its server must not take the whole app down at startup.
+    """
+    monkeypatch.setattr("newal.models.pool.is_server_up", lambda _url: False)
+    config = load_config(
+        use_env=False,
+        overrides={
+            "tools": {"workspace_root": str(tmp_path)},
+            "memory": {"db_path": str(tmp_path / ".newal" / "m.db")},
+            "ui": {"save_transcripts": False},
+            "runtime": {"autostart": False},
+        },
+    )
+    with TestClient(create_app(config, autostart=False)) as client:
+        for path in ("/", "/training", "/api/settings", "/api/training/summary"):
+            assert client.get(path).status_code == 200, path
+
+        # And it says so, rather than leaving the user to discover it by asking.
+        assert client.get("/api/state").json()["unavailable"]
 
 
 # ---- settings (normal mode) --------------------------------------------------

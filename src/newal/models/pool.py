@@ -6,7 +6,7 @@ import logging
 from collections.abc import Callable
 
 from ..backends import Backend, BackendError, build_backend
-from ..backends.launcher import ServerProcess, ensure_server, is_server_up
+from ..backends.launcher import ServerProcess, ServerStartError, ensure_server, is_server_up
 from ..config import Config, ModelSpec
 from .classifier import (
     SEED_EXEMPLARS,
@@ -36,6 +36,7 @@ class ModelPool:
         config: Config,
         *,
         on_progress: ProgressCallback | None = None,
+        tolerate_unavailable: bool = False,
     ) -> None:
         self.config = config
         self._notify = on_progress or (lambda _message: None)
@@ -43,19 +44,39 @@ class ModelPool:
         self._backends: dict[str, Backend] = {}
         self._embedder: EmbeddingClient | None = None
         self._reranker: RerankClient | None = None
+        #: Members whose server could not be reached, mapped to why. Empty
+        #: unless ``tolerate_unavailable`` let startup continue past a failure.
+        self.unavailable: dict[str, str] = {}
 
-        self._start_servers()
+        self._start_servers(tolerate=tolerate_unavailable)
         self.router = self._build_router()
 
     # ---- startup --------------------------------------------------------------
 
-    def _start_servers(self) -> None:
+    def _start_servers(self, *, tolerate: bool) -> None:
+        """Bring up every enabled member.
+
+        The default is to raise, because a terminal session that cannot reach a
+        model has nothing left to do. A long-running front end is different: the
+        browser UI still has to serve its pages, its settings and its training
+        data, none of which need a model. There, ``tolerate`` records the failure
+        and lets the rest of the session assemble, so the failure surfaces on the
+        one turn that needs a model rather than as a stack trace at startup.
+        """
         for key, spec in self.config.enabled_models().items():
             if is_server_up(spec.base_url):
                 self._notify(f"{key}: reusing server at {spec.base_url}")
                 continue
             self._notify(f"{key}: starting {spec.id}")
-            server = ensure_server(self.config, key, spec)
+            try:
+                server = ensure_server(self.config, key, spec)
+            except ServerStartError as exc:
+                if not tolerate:
+                    raise
+                log.warning("pool member %r unavailable: %s", key, exc)
+                self.unavailable[key] = str(exc)
+                self._notify(f"{key}: unavailable ({exc.__class__.__name__})")
+                continue
             if server is not None:
                 self._servers.append(server)
 
@@ -130,6 +151,8 @@ class ModelPool:
             spec = self.config.models.get(key)
             if spec is None or not spec.enabled:
                 raise BackendError(f"model {key!r} is not an enabled pool member")
+            if key in self.unavailable:
+                raise BackendError(self.unavailable[key])
             self._backends[key] = build_backend(self.config, key, spec)
         return self._backends[key]
 

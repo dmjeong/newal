@@ -5,7 +5,7 @@
 Python · VS Code · 완전 오프라인 · 사용량 제한 없음 · 무료.
 
 **v5.0** — 웹 UI가 두 모드로 갈라졌습니다. `/`는 평소 쓰는 대화 화면과 개인 설정,
-`/training`은 파인튜닝 준비 전용입니다.
+`/training`은 파인튜닝 준비 전용입니다. **VS Code에서 F5를 누르면 웹이 뜹니다.**
 
 ---
 
@@ -16,36 +16,50 @@ git clone https://github.com/dmjeong/newal && cd newal
 code .                        # VS Code로 열기
 ```
 
-VS Code에서 **Ctrl+Shift+P → "Tasks: Run Task" → `setup: create venv and install`**
-하나만 누르면 가상환경 생성 + 설치가 끝납니다.
+**1단계.** Ctrl+Shift+P → `Tasks: Run Task` → **`setup: create venv and install`**
+가상환경 생성과 설치가 한 번에 끝납니다.
 
-**브라우저 UI로 쓰려면:**
+**2단계.** **F5.** 브라우저가 열리고 http://localhost:8800 이 뜹니다.
 
-```bash
-pip install -e ".[web]"
-newal web                          # 브라우저가 자동으로 열립니다
-```
+F5는 목록 맨 위 구성을 실행합니다. 지금은 `newal: web (browser UI)`입니다.
+다른 걸 돌리고 싶으면 Ctrl+Shift+D의 드롭다운에서 고르세요:
 
-터미널이 편하면 **F5 → `newal: chat`**.
+| 구성 | 하는 일 |
+|---|---|
+| **`newal: web (browser UI)`** | **F5 기본값.** 모델 서버를 띄우고 브라우저를 엽니다 |
+| `newal: web without starting servers` | UI만. **GPU도 모델도 없이** 화면이 뜹니다 |
+| `newal: chat (interactive)` | 터미널 대화 |
+| `newal: run all tests` | 전체 테스트 |
 
 터미널로 하려면:
 
 ```bash
 python -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
-pip install -e ".[dev,video]"
-pytest -q                          # 290개 통과하면 설치 성공 (GPU/모델 불필요)
+pip install -e ".[dev,video,web]"
+pytest -q                          # 299개 통과하면 설치 성공 (GPU/모델 불필요)
+newal web
 ```
 
-여기까지는 **GPU도 모델도 필요 없습니다.** 실제로 대화하려면 추론 엔진이 추가로 필요합니다:
+### GPU가 없으면 어디까지 되나
+
+`newal web`은 모델 서버부터 띄우려 하고, GPU가 없으면 거기서 막힙니다.
+**`--no-autostart`를 붙이면 UI는 그대로 뜹니다:**
+
+```bash
+newal web --no-autostart
+```
+
+모델이 필요한 건 **대화 한 턴뿐**입니다. 나머지는 다 됩니다 — 두 화면, 설정 저장,
+학습 데이터 내보내기, 스크립트 생성. 사이드바가 어느 모델에 연결 못 했는지 알려주고,
+대화창은 물어보면 그때 이유를 말합니다.
+
+실제로 대화하려면 추론 엔진이 필요합니다:
 
 ```bash
 pip install vllm                   # NVIDIA GPU 필요
-newal chat                         # 첫 실행 시 가중치 자동 다운로드 (수십 GB)
+newal web                          # 첫 실행 시 가중치 자동 다운로드 (수십 GB)
 ```
-
-> **GPU가 없거나 vLLM 설치가 안 될 때:** `newal chat` 대신 테스트와 `newal index`,
-> `newal config`는 그대로 동작합니다. 코드를 먼저 둘러보기엔 충분합니다.
 
 ---
 
@@ -597,7 +611,7 @@ cli.py                사용자 입력 받기, /명령 처리
 
 ### 테스트가 곧 명세입니다
 
-GPU 없이 290개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
+GPU 없이 299개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금하면 테스트를 보세요.
 
 | 테스트 | 대상 |
 |---|---|
@@ -614,6 +628,7 @@ GPU 없이 290개가 다 돕니다. 어떤 함수가 뭘 보장하는지 궁금�
 | `test_web.py` | HTTP 전송 · 업로드 차단 · 승인 왕복 · 두 모드 라우트 |
 | `test_settings.py` | 설정 검증 · 전부 아니면 전무 적용 · local.yaml 병합 |
 | `test_plan.py` | 파인튜닝 파라미터 검증 · 경고 · 생성된 스크립트 |
+| `test_editor_setup.py` | F5가 웹을 띄우는지, 셋업이 web extra를 까는지 |
 | `test_bm25.py` / `test_config.py` | 검색 / 설정 |
 
 VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·디버깅됩니다.
@@ -623,7 +638,7 @@ VS Code 왼쪽 **플라스크 아이콘(Testing 패널)** 에서 개별 실행·
 ## 개발
 
 ```bash
-pytest -q                    # 290개 테스트 (GPU 불필요)
+pytest -q                    # 299개 테스트 (GPU 불필요)
 ruff check src tests         # 린트 (설정은 pyproject.toml의 [tool.ruff])
 newal index                  # 저장소 색인만
 newal config                 # 병합된 설정 확인

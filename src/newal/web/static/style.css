@@ -68,6 +68,11 @@ body {
 #sidebar td { padding: 2px 0; }
 #sidebar td:last-child { text-align: right; font-family: var(--mono); color: var(--muted); }
 #sidebar footer { margin-top: auto; display: grid; gap: 8px; }
+#sidebar li.down { color: var(--muted); text-decoration: line-through; }
+.bad-note {
+  color: var(--bad); margin-top: 8px; border-left: 2px solid var(--bad);
+  padding-left: 8px; line-height: 1.5;
+}
 
 button {
   font: inherit; padding: 7px 14px; border-radius: 7px; cursor: pointer;

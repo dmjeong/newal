@@ -124,3 +124,45 @@ def test_both_engines_produce_a_runnable_looking_command(engine):
     cmd = build_command(config, key, spec)
     assert cmd[1] == "-m"
     assert all(isinstance(part, str) for part in cmd)
+
+
+# ---- an unreachable member ---------------------------------------------------
+
+
+@pytest.fixture
+def no_server(monkeypatch):
+    """No inference server anywhere, and nothing may be started."""
+    monkeypatch.setattr("newal.models.pool.is_server_up", lambda _url: False)
+    return _config(runtime={"autostart": False})
+
+
+def test_a_terminal_pool_refuses_to_start_without_a_model(no_server):
+    """The CLI has nothing to offer without a model, so it must fail loudly."""
+    from newal.backends.launcher import ServerStartError
+    from newal.models import ModelPool
+
+    with pytest.raises(ServerStartError):
+        ModelPool(no_server)
+
+
+def test_a_tolerant_pool_starts_and_records_why(no_server):
+    """The browser UI still has pages, settings and training data to serve."""
+    from newal.models import ModelPool
+
+    pool = ModelPool(no_server, tolerate_unavailable=True)
+
+    assert set(pool.unavailable) == set(no_server.enabled_models())
+    # The router still exists, so routing and the settings panel keep working.
+    assert pool.router.strongest
+    assert pool.describe()
+
+
+def test_a_tolerated_member_still_refuses_to_serve_a_turn(no_server):
+    """Tolerating the failure at startup must not hide it at request time."""
+    from newal.backends.base import BackendError
+    from newal.models import ModelPool
+
+    pool = ModelPool(no_server, tolerate_unavailable=True)
+
+    with pytest.raises(BackendError, match="autostart is off"):
+        pool.backend(pool.router.strongest)
