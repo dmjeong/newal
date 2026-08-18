@@ -84,7 +84,7 @@ SETTINGS: tuple[Setting, ...] = (
     ),
     Setting(
         "agent.verify", "테스트로 검증", "bool", "에이전트",
-        help="편집 후 테스트를 돌리고 실패하면 스스로 고칩니다. 품질에 가장 크게 기여합니다.",
+        help="편집 후 테스트를 돌리고 실패하면 스스로 고칩니다. 품질을 가장 많이 올립니다.",
     ),
     Setting(
         "agent.max_verify_retries", "수리 재시도 횟수", "int", "에이전트",
